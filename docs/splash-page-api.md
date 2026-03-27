@@ -174,10 +174,110 @@ constant("pantheonConfig", {
 })
 ```
 
-## Implications for Automation
+## DXP DSPM Internal Architecture
 
-1. **Cannot manage splash pages via reefService** -- the Reef API has no splash page endpoints.
-2. **Must interact with the DXP DSPM service directly** -- either via its own API or by driving the iframe UI.
-3. **The `IFrameHandler` pattern** suggests the DSPM app communicates with the Pantheon parent via `postMessage`. This could be intercepted to understand the DSPM protocol.
-4. **Next step**: Explore the DXP DSPM service directly at `https://dxp-dspm-prod.apps.int.drop.prod.us-west-2.aws.paas.redhat.com/` to discover its API, or intercept `postMessage` events between the iframe and Pantheon.
-5. **Access control**: The splash page route requires `admin` or `splash-page-manager` permission.
+The DXP DSPM is a **Drupal 10** application ("Docs 2.0 Splash Page Manager") using:
+- Custom theme: `spm` (PatternFly UI components)
+- Custom module: `product_manager` (category management, tabledrag)
+- Custom module: `pantheon_messaging` (postMessage to parent iframe)
+- Standard Drupal Form API for all operations
+
+### Drupal Form: `product_manager_view_product`
+
+The main splash page is a single Drupal form (`form_id: product_manager_view_product`) containing:
+
+**Controls:**
+- `versions` (select) — version/environment selector
+- `filter_localizations` (select) — locale filter
+- `filter_targets` (select) — target filter
+- `add_category[category]` (select) — add a category from available list
+- `action` (select) — bulk action ("remove")
+- `status_direction` (select) — status management
+- `embargo_date[date]` / `embargo_date[time]` — embargo scheduling
+
+**CSRF tokens:**
+- `form_build_id` — unique per page render
+- `form_token` — CSRF protection
+- `form_id` — always `product_manager_view_product`
+
+**Category data structure (hidden fields):**
+```
+categories[{uuid}][title][id]       = {uuid}           # Category UUID
+categories[{uuid}][title][parent]   = ""                # Empty for top-level
+categories[{uuid}][title][depth]    = "0"               # 0 for categories
+categories[{uuid}][weight]          = {integer}         # Display order
+
+categories[link--{uuid}--{index}][title][id]     = link--{uuid}--{index}
+categories[link--{uuid}--{index}][title][parent] = {uuid}     # Parent category UUID
+categories[link--{uuid}--{index}][title][depth]  = "1"        # 1 for links
+categories[link--{uuid}--{index}][weight]        = {integer}  # Order within category
+categories[link--{uuid}--{index}][action_select] = "1"        # Checkbox for bulk actions
+```
+
+### 1.9/stage Categories (Current)
+
+| Weight | UUID | Category | Titles |
+|--------|------|----------|--------|
+| 83 | 20fd5ed2-... | Discover | About Red Hat Developer Hub |
+| 84 | 28327e71-... | Release Notes | Red Hat Developer Hub release notes |
+| 85 | 70d1b236-... | Get started | Setting up..., Navigate... |
+| 86 | 9343a97b-... | Install | Air-gapped, EKS, GKE, AKS, OCP, OSD |
+| 87 | (uuid) | Upgrade | Upgrading Red Hat Developer Hub |
+| 88 | (uuid) | Configure | Configuring..., Customizing... |
+| 89 | (uuid) | Control access | Authentication..., Authorization... |
+| 90 | (uuid) | Integrate | GitHub, MCP tools, Lightspeed, OpenShift AI Connector |
+| 91 | (uuid) | Manage | Scorecards, TechDocs, Software dev... |
+| 92 | (uuid) | Monitor | Adoption Insights, Audit logs, Monitoring, Telemetry |
+| 93 | (uuid) | Automate | Orchestrator |
+| 94 | 2bd7ccda-... | Plugins | Installing/viewing, Configuring, Using, Develop/deploy, Reference |
+
+### Operations via Drupal AJAX
+
+The DSPM uses Drupal AJAX for operations. Each action has a unique selector mapped to an AJAX endpoint:
+
+```
+/product/{product}/{version}/{title_uuid}/{action_type}/{param}?destination=...&iframe=true
+```
+
+Action types discovered:
+- `0/1` through `5/1` — various link operations per category
+- Modal dialogs for "Add link", "Edit link", "Edit category"
+- Bulk remove via `action` select + checkbox selection
+
+### Buttons/Operations Available
+
+- **Save** — submits the main form
+- **Add category** — select from `add_category[category]` dropdown + click add
+- **Remove category** — per-category remove button
+- **Add link** — opens modal dialog (AJAX)
+- **Edit link** / **Remove link** — per-link operations (AJAX)
+- **Promote to Production** — dropdown action
+- **Copy from Production** — dropdown action
+- **Show row weights** — toggles drag-and-drop vs weight numbers
+
+## Automation Approach
+
+### Hybrid pattern (from `reef-publish.py` insight)
+
+Use Playwright **only for initial Kerberos SPNEGO login**, then extract cookies and use `requests` for all subsequent API/form operations:
+
+1. **Login phase** (Playwright Firefox, headed if needed):
+   - Navigate to Pantheon, handle SSO/SPNEGO
+   - Extract session cookies after successful auth
+   - Cache cookies (same pattern as `reef-publish.py`)
+
+2. **Export phase** (`requests` with cached cookies):
+   - GET `https://dxp-dspm-prod.../product/{product}/{version}/{env}?iframe=true`
+   - Parse HTML form to extract category structure (UUID, weight, parent, titles)
+   - Output YAML configuration file
+
+3. **Configure phase** (`requests` with cached cookies):
+   - GET the form page to obtain `form_build_id` and `form_token`
+   - Build POST data matching the Drupal form structure
+   - POST to save changes (categories, ordering, links)
+
+This avoids the overhead of running Playwright for every operation and allows headless-first operation.
+
+### Access control
+
+The splash page route requires `admin` or `splash-page-manager` permission.

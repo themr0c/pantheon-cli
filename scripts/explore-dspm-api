@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Explore DXP DSPM (Splash Page Manager) API endpoints (READ-ONLY).
+
+Accesses the DSPM service through the Pantheon UI (authenticated session)
+and intercepts postMessage communication between the iframe and parent window.
+Never writes or modifies any data.
+"""
+
+import os
+import sys
+import json
+import time
+from pathlib import Path
+
+# Re-exec under the repo venv if not already running from it
+_script = Path(__file__).resolve()
+_repo_root = _script.parent.parent
+_venv_python = _repo_root / 'venv' / 'bin' / 'python'
+if _venv_python.is_file() and Path(sys.executable).resolve() != _venv_python.resolve():
+    os.execv(str(_venv_python), [str(_venv_python), str(_script)] + sys.argv[1:])
+
+# Load .env from repo root
+_env_file = _repo_root / '.env'
+if _env_file.is_file():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            k, v = line.split('=', 1)
+            os.environ[k.strip()] = v.strip()
+
+from playwright.sync_api import sync_playwright
+
+PANTHEON_URL = "https://pantheon.cee.redhat.com"
+SESSION_DIR = Path("/tmp/pantheon-session")
+
+def print_section(title):
+    """Print a section header."""
+    print("\n" + "=" * 80)
+    print(f" {title}")
+    print("=" * 80 + "\n")
+
+def main():
+    sso_email = os.getenv("SSO_EMAIL")
+    if not sso_email:
+        print("ERROR: SSO_EMAIL not set in .env file", file=sys.stderr)
+        return 1
+
+    print("DXP DSPM API Explorer via Pantheon (READ-ONLY)")
+    print(f"SSO Email: {sso_email}")
+    print(f"Session Dir: {SESSION_DIR}")
+    print(f"Pantheon URL: {PANTHEON_URL}")
+
+    # Track all postMessage events
+    messages_log = []
+    network_log = []
+
+    with sync_playwright() as p:
+        # Use the existing Pantheon session (authenticated)
+        # Using headed mode because DSPM may require full browser environment
+        browser = p.firefox.launch_persistent_context(
+            str(SESSION_DIR),
+            headless=False,
+            viewport={"width": 1400, "height": 900},
+            ignore_https_errors=True,
+            firefox_user_prefs={
+                "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+            },
+        )
+
+        page = browser.new_page()
+
+        # Set up console logging
+        page.on("console", lambda msg: print(f"[CONSOLE {msg.type}] {msg.text}"))
+
+        # Track network requests to DSPM domain
+        def handle_request(request):
+            if "dxp-dspm" in request.url:
+                network_log.append({
+                    "method": request.method,
+                    "url": request.url,
+                    "headers": dict(request.headers),
+                    "post_data": request.post_data
+                })
+
+        def handle_response(response):
+            if "dxp-dspm" in response.url:
+                try:
+                    body = response.body()
+                    content_type = response.headers.get("content-type", "")
+
+                    if "application/json" in content_type:
+                        try:
+                            parsed = json.loads(body)
+                            body = json.dumps(parsed, indent=2)
+                        except Exception:
+                            body = body.decode('utf-8', errors='replace')
+                    else:
+                        body = f"<{len(body)} bytes, content-type: {content_type}>"
+
+                    for req in network_log:
+                        if req["url"] == response.url and "response" not in req:
+                            req["response"] = {
+                                "status": response.status,
+                                "headers": dict(response.headers),
+                                "body": body
+                            }
+                            break
+                except Exception as e:
+                    print(f"Warning: Could not read response body: {e}")
+
+        page.on("request", handle_request)
+        page.on("response", handle_response)
+
+        # Install postMessage interceptor
+        page.evaluate("""() => {
+            window.postMessageLog = [];
+
+            // Intercept incoming messages
+            const originalAddEventListener = window.addEventListener;
+            window.addEventListener = function(type, listener, options) {
+                if (type === 'message') {
+                    const wrappedListener = function(event) {
+                        window.postMessageLog.push({
+                            timestamp: Date.now(),
+                            origin: event.origin,
+                            data: event.data,
+                            direction: 'incoming'
+                        });
+                        return listener.apply(this, arguments);
+                    };
+                    return originalAddEventListener.call(this, type, wrappedListener, options);
+                }
+                return originalAddEventListener.apply(this, arguments);
+            };
+
+            // Intercept outgoing messages (to iframe)
+            const iframeProto = HTMLIFrameElement.prototype;
+            const originalContentWindow = Object.getOwnPropertyDescriptor(iframeProto, 'contentWindow');
+
+            console.log('postMessage interceptor installed');
+        }""")
+
+        # TEST 1: Navigate to configured splash page (1.9/stage)
+        print_section("TEST 1: Loading splash page via Pantheon (1.9/stage)")
+        splash_url = f"{PANTHEON_URL}/#/splash-pages/red_hat_developer_hub/1.9/stage"
+        print(f"Navigating to: {splash_url}")
+
+        try:
+            page.goto(splash_url, wait_until="networkidle", timeout=60000)
+            print(f"Page title: {page.title()}")
+
+            # Wait for Angular to load and iframe to appear
+            print("Waiting for iframe to load...")
+            time.sleep(5)
+
+            # Check for iframe
+            iframe = page.query_selector('iframe#splash-page-frame')
+            if iframe:
+                iframe_src = iframe.get_attribute('src')
+                print(f"Found iframe: {iframe_src}")
+            else:
+                print("WARNING: No iframe found with id 'splash-page-frame'")
+                # Try to find any iframe
+                all_iframes = page.query_selector_all('iframe')
+                print(f"Found {len(all_iframes)} iframe(s) total")
+                for i, frame in enumerate(all_iframes):
+                    src = frame.get_attribute('src')
+                    print(f"  iframe {i+1}: {src}")
+
+            # Get postMessage log
+            messages = page.evaluate("() => window.postMessageLog || []")
+            print(f"\nCaptured {len(messages)} postMessage events")
+            for msg in messages:
+                messages_log.append(msg)
+                print(f"  {msg['direction']}: {json.dumps(msg['data'])[:200]}")
+
+        except Exception as e:
+            print(f"Error loading page: {e}")
+
+        # TEST 2: Examine the DSPM iframe directly
+        print_section("TEST 2: Examining DSPM iframe content")
+
+        try:
+            # Get the iframe element
+            iframe_elem = page.query_selector('iframe#splash-page-frame') or \
+                         page.query_selector('iframe[src*="dxp-dspm"]')
+
+            if iframe_elem:
+                iframe_src = iframe_elem.get_attribute('src')
+                print(f"Iframe src: {iframe_src}")
+
+                # Try to access iframe content
+                iframe_frame = page.frame(url=lambda url: 'dxp-dspm' in url)
+
+                if iframe_frame:
+                    print("\nIframe content accessible!")
+
+                    # Get iframe HTML
+                    iframe_html = iframe_frame.content()
+                    print(f"Iframe HTML length: {len(iframe_html)} bytes")
+
+                    # Look for forms
+                    forms = iframe_frame.query_selector_all('form')
+                    print(f"\nFound {len(forms)} form(s) in iframe")
+
+                    for i, form in enumerate(forms):
+                        action = form.get_attribute('action')
+                        method = form.get_attribute('method')
+                        print(f"  Form {i+1}: action='{action}', method='{method}'")
+
+                    # Look for AJAX/API calls in the iframe's JavaScript
+                    iframe_scripts = iframe_frame.evaluate("""() => {
+                        const scripts = [];
+                        document.querySelectorAll('script[src]').forEach(s => {
+                            scripts.push(s.src);
+                        });
+                        return scripts;
+                    }""")
+
+                    print(f"\nIframe scripts:")
+                    for script in iframe_scripts:
+                        print(f"  {script}")
+
+                    # Look for drupalSettings
+                    drupal_settings = iframe_frame.evaluate("""() => {
+                        return window.drupalSettings || null;
+                    }""")
+
+                    if drupal_settings:
+                        print(f"\ndrupalSettings found:")
+                        print(json.dumps(drupal_settings, indent=2))
+
+                    # Look for form submit URLs
+                    buttons = iframe_frame.query_selector_all('button[type="submit"], input[type="submit"]')
+                    print(f"\nFound {len(buttons)} submit button(s)")
+
+                else:
+                    print("WARNING: Cannot access iframe content (cross-origin?)")
+            else:
+                print("WARNING: No DSPM iframe found")
+
+        except Exception as e:
+            print(f"Error examining iframe: {e}")
+
+        # TEST 3: Wait for user interactions and log more messages
+        print_section("TEST 3: Monitoring for additional events")
+
+        print("Waiting 10 seconds for any async events...")
+        time.sleep(10)
+
+        # Get any new messages
+        messages = page.evaluate("() => window.postMessageLog || []")
+        new_messages = messages[len(messages_log):]
+
+        if new_messages:
+            print(f"Captured {len(new_messages)} new postMessage events")
+            for msg in new_messages:
+                messages_log.append(msg)
+                print(f"  {msg['direction']}: {json.dumps(msg['data'])}")
+
+        # TEST 4: Try unconfigured splash page
+        print_section("TEST 4: Loading unconfigured splash page (1.10/stage)")
+
+        splash_url_110 = f"{PANTHEON_URL}/#/splash-pages/red_hat_developer_hub/1.10/stage"
+        print(f"Navigating to: {splash_url_110}")
+
+        try:
+            page.goto(splash_url_110, wait_until="networkidle", timeout=60000)
+            time.sleep(5)
+
+            messages = page.evaluate("() => window.postMessageLog || []")
+            print(f"Total postMessage events: {len(messages)}")
+
+        except Exception as e:
+            print(f"Error loading page: {e}")
+
+        browser.close()
+
+    # Print summary
+    print_section("NETWORK REQUESTS TO DSPM")
+
+    if network_log:
+        print(f"Total requests: {len(network_log)}\n")
+
+        for i, req in enumerate(network_log, 1):
+            print(f"{i}. {req['method']} {req['url']}")
+
+            if req.get("post_data"):
+                print(f"   POST data: {req['post_data']}")
+
+            if "response" in req:
+                resp = req["response"]
+                print(f"   Response: {resp['status']}")
+
+                if isinstance(resp["body"], str) and (resp["body"].startswith("{") or resp["body"].startswith("[")):
+                    print(f"   Body:\n{resp['body']}")
+
+            print()
+    else:
+        print("No requests to DSPM captured")
+
+    print_section("POST MESSAGE LOG")
+
+    if messages_log:
+        print(f"Total messages: {len(messages_log)}\n")
+
+        for i, msg in enumerate(messages_log, 1):
+            print(f"{i}. [{msg['direction']}] from {msg['origin']}")
+            print(f"   Data: {json.dumps(msg['data'], indent=2)}")
+            print()
+    else:
+        print("No postMessage events captured")
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
