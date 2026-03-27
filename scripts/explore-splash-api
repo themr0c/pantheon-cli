@@ -1,0 +1,587 @@
+#!/usr/bin/env python3
+"""Explore Pantheon splash page API endpoints (READ-ONLY).
+
+Discovers reefService and other Angular service methods related to
+splash page management. Never writes or modifies any data.
+"""
+
+import os
+import sys
+import json
+import time
+from pathlib import Path
+
+# Re-exec under the repo venv if not already running from it
+_script = Path(__file__).resolve()
+_repo_root = _script.parent.parent
+_venv_python = _repo_root / 'venv' / 'bin' / 'python'
+if _venv_python.is_file() and Path(sys.executable).resolve() != _venv_python.resolve():
+    os.execv(str(_venv_python), [str(_venv_python), str(_script)] + sys.argv[1:])
+
+# Load .env from repo root
+_env_file = _repo_root / '.env'
+if _env_file.is_file():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            k, v = line.split('=', 1)
+            os.environ[k.strip()] = v.strip()
+
+from playwright.sync_api import sync_playwright
+
+# Constants
+PANTHEON_URL = "https://pantheon.cee.redhat.com/"
+SESSION_DIR = "/tmp/pantheon-session"
+
+CONFIGURED_SPLASH = "https://pantheon.cee.redhat.com/#/splash-pages/red_hat_developer_hub/1.9/stage"
+UNCONFIGURED_SPLASH = "https://pantheon.cee.redhat.com/#/splash-pages/red_hat_developer_hub/1.10/stage"
+
+
+def check_auth(page):
+    """Check if authenticated with Pantheon."""
+    try:
+        return page.evaluate("""() => {
+            return new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', 'https://pantheon.cee.redhat.com/auth/check_login', true);
+                xhr.withCredentials = true;
+                xhr.onload = () => resolve(xhr.status);
+                xhr.onerror = () => resolve(0);
+                xhr.send();
+            });
+        }""") == 200
+    except Exception:
+        return False
+
+
+def do_sso_login(page, email):
+    """Attempt headless SSO login via Kerberos SPNEGO."""
+    print("Session expired. Attempting headless SSO login with Kerberos...")
+    try:
+        page.goto(PANTHEON_URL + "auth/login", wait_until="domcontentloaded", timeout=60000)
+    except Exception:
+        pass  # May error on navigation redirect
+    time.sleep(8)
+
+    if 'sso.redhat.com' not in page.url:
+        return False
+
+    try:
+        page.evaluate(
+            "() => document.querySelectorAll('.truste_box_overlay, .truste_cm_outerdiv, "
+            ".truste_overlay, [class*=\"truste\"], #teconsent').forEach(e => e.remove())"
+        )
+    except Exception:
+        pass
+    time.sleep(1)
+
+    try:
+        page.wait_for_selector('#username-verification', state='visible', timeout=10000)
+        page.fill('#username-verification', email)
+        time.sleep(1)
+        page.click('#login-show-step2')
+        print("  Filled email and clicked Next")
+    except Exception as e:
+        print(f"  SSO form error: {e}")
+        return False
+
+    # Kerberos may auto-complete the flow before the SSO button appears.
+    for i in range(30):
+        time.sleep(2)
+        if 'pantheon.cee.redhat.com' in page.url:
+            print("  Kerberos SSO completed automatically!")
+            break
+        try:
+            sso_btn = page.locator('#rh-sso-flow')
+            if sso_btn.count() > 0 and sso_btn.first.is_visible():
+                sso_btn.first.click()
+                print("  Clicked SSO button")
+                time.sleep(5)
+        except Exception:
+            pass
+        if (i + 1) % 5 == 0:
+            print(f"  ... waiting ({(i+1)*2}s)")
+
+    # Navigate to Pantheon root to let the session cookie settle
+    time.sleep(3)
+    page.goto(PANTHEON_URL, wait_until="domcontentloaded", timeout=60000)
+    time.sleep(8)
+
+    for attempt in range(5):
+        if check_auth(page):
+            print("Authenticated via headless SSO.\n")
+            return True
+        time.sleep(3)
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+        time.sleep(3)
+        print(f"  Auth retry {attempt + 1}...")
+
+    return False
+
+
+def pretty_json(obj, max_len=None):
+    """Format JSON, optionally truncated."""
+    s = json.dumps(obj, indent=2, default=str)
+    if max_len and len(s) > max_len:
+        return s[:max_len] + "\n... (truncated)"
+    return s
+
+
+def step_header(num, text):
+    """Print a step header."""
+    print(f"\n{'=' * 70}")
+    print(f"STEP {num}: {text}")
+    print("=" * 70)
+
+
+def explore_reef_service(page):
+    """Enumerate all reefService methods."""
+    step_header(1, "Enumerate reefService methods")
+    reef_methods = page.evaluate("""() => {
+        try {
+            const injector = angular.element(document.body).injector();
+            const reef = injector.get('reefService');
+            const methods = [];
+            for (const key of Object.keys(reef)) {
+                methods.push({name: key, type: typeof reef[key], source: 'own'});
+            }
+            const proto = Object.getPrototypeOf(reef);
+            if (proto) {
+                for (const key of Object.getOwnPropertyNames(proto)) {
+                    if (key !== 'constructor' && typeof reef[key] === 'function') {
+                        methods.push({name: key, type: 'function', source: 'proto'});
+                    }
+                }
+            }
+            return methods;
+        } catch(e) { return [{name: 'ERROR', type: e.message}]; }
+    }""")
+
+    own_methods = [m for m in reef_methods if m.get('source') == 'own' and m['type'] == 'function']
+    print(f"\nreefService has {len(own_methods)} own methods:")
+    for m in sorted(own_methods, key=lambda x: x['name']):
+        print(f"  {m['name']}")
+
+    splash_keywords = ['splash', 'category', 'categories', 'promote', 'page', 'landing']
+    splash_related = [m for m in reef_methods if any(kw in m['name'].lower() for kw in splash_keywords)]
+    print(f"\nSplash/category-related methods: {len(splash_related)}")
+    for m in sorted(splash_related, key=lambda x: x['name']):
+        print(f"  {m['name']}")
+
+    return own_methods
+
+
+def explore_angular_routes(page):
+    """Get all Angular routes and identify splash-related ones."""
+    step_header(2, "Angular routes (ngRoute)")
+    routes = page.evaluate("""() => {
+        try {
+            const injector = angular.element(document.body).injector();
+            const route = injector.get('$route');
+            const routeKeys = Object.keys(route.routes || {});
+            const splashRoutes = {};
+            for (const key of routeKeys) {
+                if (key.toLowerCase().includes('splash')) {
+                    const r = route.routes[key];
+                    splashRoutes[key] = {
+                        controller: r.controller,
+                        templateUrl: r.templateUrl,
+                        resolve: r.resolve ? Object.keys(r.resolve) : undefined,
+                    };
+                }
+            }
+            const loc = injector.get('$location');
+            return {
+                allRoutes: routeKeys,
+                splashRoutes: splashRoutes,
+                currentPath: loc.path(),
+                currentRoute: route.current ? {
+                    controller: route.current.controller,
+                    templateUrl: route.current.templateUrl,
+                    params: route.current.params,
+                } : null,
+            };
+        } catch(e) { return {error: e.message}; }
+    }""")
+    print(pretty_json(routes, 5000))
+    return routes
+
+
+def explore_js_bundle(page):
+    """Find SplashPagesCtrl source in the JS bundle."""
+    step_header(3, "SplashPagesCtrl source from JS bundle")
+
+    scripts = page.evaluate("""() => {
+        return Array.from(document.querySelectorAll('script[src]')).map(s => s.src);
+    }""")
+
+    for script_url in scripts:
+        # Focus on main/app bundles
+        if not any(kw in script_url for kw in ['main', 'app', 'scripts']):
+            continue
+
+        print(f"\nFetching {script_url}...")
+        js_content = page.evaluate("""(url) => {
+            return new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.onload = () => resolve(xhr.responseText);
+                xhr.onerror = () => resolve('ERROR');
+                xhr.send();
+            });
+        }""", script_url)
+
+        if js_content == 'ERROR':
+            print("  Failed to fetch")
+            continue
+
+        print(f"  Bundle size: {len(js_content)} bytes")
+
+        # Search for SplashPagesCtrl
+        idx = js_content.find('SplashPagesCtrl')
+        if idx < 0:
+            print("  SplashPagesCtrl not found")
+            continue
+
+        # Find the controller factory function - search backward for function start
+        # and forward for a reasonable amount of code
+        start = max(0, idx - 500)
+        end = min(len(js_content), idx + 8000)
+        snippet = js_content[start:end]
+        print(f"  Found SplashPagesCtrl at offset {idx}")
+        print(f"  Source context:\n{snippet}")
+
+        # Also search for splash-pages template HTML
+        tmpl_patterns = ['splash-pages.html', 'splash_page', 'splashPage']
+        for pat in tmpl_patterns:
+            tmpl_idx = js_content.find(pat)
+            if tmpl_idx >= 0:
+                tmpl_start = max(0, tmpl_idx - 100)
+                tmpl_end = min(len(js_content), tmpl_idx + 5000)
+                print(f"\n  Pattern '{pat}' found at offset {tmpl_idx}:")
+                print(f"  {js_content[tmpl_start:tmpl_end][:3000]}")
+
+        # Search for Angular $templateCache.put for splash templates
+        cache_idx = js_content.find('splash-pages')
+        while cache_idx >= 0:
+            cache_start = max(0, cache_idx - 200)
+            cache_end = min(len(js_content), cache_idx + 8000)
+            print(f"\n  'splash-pages' at offset {cache_idx}:")
+            print(f"  {js_content[cache_start:cache_end][:5000]}")
+            cache_idx = js_content.find('splash-pages', cache_idx + 1)
+            if cache_idx == -1:
+                break
+
+        return js_content
+
+    return None
+
+
+def explore_rendered_html(page):
+    """Get the rendered HTML of the splash page view."""
+    step_header(4, "Rendered splash page HTML (ng-view)")
+    html = page.evaluate("""() => {
+        const view = document.querySelector('[ng-view]');
+        return view ? view.innerHTML : 'no ng-view found';
+    }""")
+    print(html[:8000])
+    return html
+
+
+def explore_angular_directives(page):
+    """Get all Angular directives on the page."""
+    step_header(5, "Angular directives on splash page")
+    directives = page.evaluate("""() => {
+        const results = {
+            ngControllers: [],
+            ngRepeats: [],
+            ngModels: [],
+            ngClicks: [],
+            ngIfs: [],
+            ngShows: [],
+        };
+
+        document.querySelectorAll('[ng-controller]').forEach(el => {
+            results.ngControllers.push(el.getAttribute('ng-controller'));
+        });
+        document.querySelectorAll('[ng-repeat]').forEach(el => {
+            results.ngRepeats.push({
+                repeat: el.getAttribute('ng-repeat'),
+                tag: el.tagName,
+                text: el.textContent.substring(0, 80).trim()
+            });
+        });
+        document.querySelectorAll('[ng-model]').forEach(el => {
+            results.ngModels.push({model: el.getAttribute('ng-model'), tag: el.tagName});
+        });
+        document.querySelectorAll('[ng-click]').forEach(el => {
+            results.ngClicks.push({
+                click: el.getAttribute('ng-click'),
+                text: el.textContent.substring(0, 60).trim()
+            });
+        });
+        document.querySelectorAll('[ng-if]').forEach(el => {
+            results.ngIfs.push(el.getAttribute('ng-if'));
+        });
+        document.querySelectorAll('[ng-show]').forEach(el => {
+            results.ngShows.push(el.getAttribute('ng-show'));
+        });
+
+        return results;
+    }""")
+    print(pretty_json(directives, 8000))
+    return directives
+
+
+def explore_reef_api_endpoints(page):
+    """Try known and guessed Reef API splash endpoints."""
+    step_header(6, "Direct Reef API endpoint probing")
+    reef_endpoints = page.evaluate("""() => {
+        const endpoints = [
+            'lightblue/get_splash_page?product=red_hat_developer_hub&version=1.9&environment=stage&lang=en-US',
+            'lightblue/get_splash_pages?product=red_hat_developer_hub&version=1.9&lang=en-US',
+            'lightblue/splash_page?product=red_hat_developer_hub&version=1.9&environment=stage',
+            'splash?product=red_hat_developer_hub&version=1.9&environment=stage',
+            'splash_page?product=red_hat_developer_hub&version=1.9&environment=stage',
+            'lightblue/get_categories?product=red_hat_developer_hub&version=1.9&environment=stage&lang=en-US',
+            'lightblue/categories?product=red_hat_developer_hub&version=1.9&environment=stage',
+            'lightblue/get_titles?combineBrewed=false&lang=en-US&product=red_hat_developer_hub&version=1.9',
+        ];
+
+        return new Promise(async (resolve) => {
+            const results = {};
+            for (const ep of endpoints) {
+                try {
+                    const resp = await new Promise((res, rej) => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('GET', 'https://reef.corp.redhat.com/api/' + ep, true);
+                        xhr.withCredentials = true;
+                        xhr.onload = () => res({status: xhr.status, body: xhr.responseText.substring(0, 3000)});
+                        xhr.onerror = () => res({status: 0, body: 'network error'});
+                        xhr.send();
+                    });
+                    results[ep] = resp;
+                } catch(e) {
+                    results[ep] = {error: e.message};
+                }
+            }
+            resolve(results);
+        });
+    }""")
+
+    for ep, resp in reef_endpoints.items():
+        status = resp.get('status', '?')
+        print(f"\n  GET /api/{ep}")
+        print(f"    Status: {status}")
+        if status == 200:
+            try:
+                body = json.loads(resp.get('body', ''))
+                print(f"    Response: {pretty_json(body, 2000)}")
+            except (json.JSONDecodeError, TypeError):
+                print(f"    Response: {resp.get('body', '')[:500]}")
+        elif resp.get('body'):
+            print(f"    Body: {resp.get('body', '')[:200]}")
+
+    return reef_endpoints
+
+
+def explore_titles_data(page):
+    """Get titles data which may include splash/category info."""
+    step_header(7, "Titles data structure (looking for splash/category fields)")
+    titles_data = page.evaluate("""() => {
+        return new Promise((resolve) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', 'https://reef.corp.redhat.com/api/lightblue/get_titles?combineBrewed=false&lang=en-US&product=red_hat_developer_hub&version=1.9', true);
+            xhr.withCredentials = true;
+            xhr.onload = () => {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    const products = data.data.products;
+                    if (products && products[0]) {
+                        const version = products[0].versions[0];
+                        // Get first title structure in full detail
+                        const firstTitle = version.titles[0];
+                        // Get all unique keys across all titles
+                        const allKeys = new Set();
+                        for (const t of version.titles) {
+                            Object.keys(t).forEach(k => allKeys.add(k));
+                        }
+                        // Get categories/splash info from titles
+                        const categorized = {};
+                        for (const t of version.titles) {
+                            const cat = t.category || t.splashCategory || t.splash_category || 'uncategorized';
+                            if (!categorized[cat]) categorized[cat] = [];
+                            categorized[cat].push(t.name);
+                        }
+                        resolve({
+                            titleCount: version.titles.length,
+                            allTitleKeys: Array.from(allKeys).sort(),
+                            firstTitleFull: firstTitle,
+                            categorizedTitles: categorized,
+                            versionKeys: Object.keys(version).filter(k => k !== 'titles'),
+                            productKeys: Object.keys(products[0]).filter(k => k !== 'versions'),
+                        });
+                    } else {
+                        resolve({raw: data});
+                    }
+                } catch(e) {
+                    resolve({error: e.message, raw: xhr.responseText.substring(0, 1000)});
+                }
+            };
+            xhr.onerror = () => resolve({error: 'network error'});
+            xhr.send();
+        });
+    }""")
+    print(pretty_json(titles_data, 10000))
+    return titles_data
+
+
+def explore_unconfigured(page):
+    """Compare with unconfigured splash page (1.10/stage)."""
+    step_header(8, "Compare with unconfigured splash page (1.10/stage)")
+    page.goto(UNCONFIGURED_SPLASH, wait_until="domcontentloaded", timeout=60000)
+    time.sleep(10)
+
+    html = page.evaluate("""() => {
+        const view = document.querySelector('[ng-view]');
+        return view ? view.innerHTML : 'no ng-view found';
+    }""")
+    print("Rendered HTML for 1.10/stage:")
+    print(html[:5000])
+
+    # Also get 1.10 titles data for comparison
+    titles_110 = page.evaluate("""() => {
+        return new Promise((resolve) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', 'https://reef.corp.redhat.com/api/lightblue/get_titles?combineBrewed=false&lang=en-US&product=red_hat_developer_hub&version=1.10', true);
+            xhr.withCredentials = true;
+            xhr.onload = () => {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    const products = data.data.products;
+                    if (products && products[0] && products[0].versions[0]) {
+                        const version = products[0].versions[0];
+                        const allKeys = new Set();
+                        for (const t of version.titles) {
+                            Object.keys(t).forEach(k => allKeys.add(k));
+                        }
+                        resolve({
+                            titleCount: version.titles.length,
+                            allTitleKeys: Array.from(allKeys).sort(),
+                            firstTitle: version.titles[0],
+                            versionKeys: Object.keys(version).filter(k => k !== 'titles'),
+                        });
+                    } else {
+                        resolve({error: 'no version data', status: xhr.status});
+                    }
+                } catch(e) {
+                    resolve({error: e.message, status: xhr.status, body: xhr.responseText.substring(0, 500)});
+                }
+            };
+            xhr.onerror = () => resolve({error: 'network error'});
+            xhr.send();
+        });
+    }""")
+    print(f"\n1.10 titles data:")
+    print(pretty_json(titles_110, 5000))
+
+
+def explore_reef_method_sources(page):
+    """Get function source for key reefService methods."""
+    step_header(9, "reefService method signatures (version/title/product)")
+    method_sources = page.evaluate("""() => {
+        const results = {};
+        try {
+            const injector = angular.element(document.body).injector();
+            const reef = injector.get('reefService');
+
+            const allMethods = Object.keys(reef).filter(m => typeof reef[m] === 'function');
+            const relevantMethods = allMethods.filter(m => {
+                const lower = m.toLowerCase();
+                return lower.includes('title') || lower.includes('product') ||
+                       lower.includes('version') || lower.includes('publish') ||
+                       lower.includes('update');
+            });
+
+            for (const m of relevantMethods) {
+                try {
+                    results[m] = reef[m].toString().substring(0, 800);
+                } catch(e) {
+                    results[m] = 'ERROR: ' + e.message;
+                }
+            }
+        } catch(e) { results.error = e.message; }
+        return results;
+    }""")
+    print(pretty_json(method_sources, 15000))
+
+
+def main():
+    email = os.environ.get('SSO_EMAIL', '')
+    if not email:
+        sys.exit("Error: SSO_EMAIL not set in .env")
+
+    p = sync_playwright().start()
+    browser = p.firefox.launch_persistent_context(
+        SESSION_DIR,
+        headless=True,
+        viewport={"width": 1400, "height": 900},
+        ignore_https_errors=True,
+        firefox_user_prefs={
+            "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+        },
+    )
+    page = browser.pages[0] if browser.pages else browser.new_page()
+
+    try:
+        # Navigate to Pantheon and check auth
+        print("Navigating to Pantheon (headless mode)...")
+        page.goto(PANTHEON_URL, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(5)
+
+        if not check_auth(page):
+            if not do_sso_login(page, email):
+                print("ERROR: Not authenticated. Headless SSO login failed.")
+                print("Please run 'pantheon-cli list --version 1.9' first to establish a session,")
+                print("then re-run this script.")
+                return
+
+        print("Authenticated with Pantheon.\n")
+
+        # Navigate to configured splash page
+        print("Navigating to splash page 1.9/stage...")
+        page.goto(CONFIGURED_SPLASH, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(10)
+
+        # Verify Angular is loaded
+        has_angular = page.evaluate("() => typeof angular !== 'undefined'")
+        if not has_angular:
+            print("Angular not loaded, waiting more...")
+            time.sleep(10)
+            has_angular = page.evaluate("() => typeof angular !== 'undefined'")
+        if not has_angular:
+            print("ERROR: Angular not loaded on page. Aborting.")
+            return
+
+        # Run all exploration steps
+        explore_reef_service(page)
+        explore_angular_routes(page)
+        explore_js_bundle(page)
+        explore_rendered_html(page)
+        explore_angular_directives(page)
+        explore_reef_api_endpoints(page)
+        explore_titles_data(page)
+        explore_reef_method_sources(page)
+        explore_unconfigured(page)
+
+        print("\n" + "=" * 70)
+        print("EXPLORATION COMPLETE")
+        print("=" * 70)
+
+    finally:
+        browser.close()
+        p.stop()
+
+
+if __name__ == "__main__":
+    main()
