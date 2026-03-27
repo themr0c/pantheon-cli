@@ -5,3 +5,4 @@ __pycache__/
 /tmp/
 *.png
 .claude/settings.local.json
+.remember/

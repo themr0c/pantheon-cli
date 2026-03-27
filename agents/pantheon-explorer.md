@@ -1,4 +1,5 @@
 ---
+name: pantheon-explorer
 description: Explore and inspect Pantheon documentation configuration. Use when researching title states, build configurations, splash page structure, or API endpoints before making changes. Read-only exploration — never modifies anything.
 ---
 
