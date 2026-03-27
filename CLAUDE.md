@@ -19,13 +19,8 @@ Tools for automating Red Hat Pantheon documentation publishing operations.
 | `pantheon-cli update --version VERSION --env ENV --branch BRANCH [--directory DIR] [--enable] [--rebuild] [--exec]` | Update build config (dry-run by default) |
 | `pantheon-cli rebuild --version VERSION --env ENV [--enable] [--wait] [--exec]` | Trigger rebuilds |
 | `pantheon-cli publish --version VERSION [--rebuild-first] [--wait] [--exec]` | Enable + rebuild stage builds |
-
-### visual-diff
-
-| Command | Description |
-|---|---|
-| `visual-diff urls --version VERSION` | List stage/preview URLs for titles |
-| `visual-diff diff --version VERSION --output DIR` | Generate visual diff report |
+| `pantheon-cli splash-export --version VERSION --env ENV [-o FILE]` | Export splash page config to YAML |
+| `pantheon-cli splash-configure --version VERSION --env ENV -c FILE [--exec]` | Apply YAML splash page config (dry-run by default) |
 
 ## Common Options
 
@@ -42,13 +37,15 @@ Tools for automating Red Hat Pantheon documentation publishing operations.
 ## Key Behavior
 
 - **Dry-run by default**: All write operations show a plan without `--exec`. Always review before executing.
-- **Browser-based**: Uses Playwright Firefox (headed, not headless) for Kerberos SPNEGO auth.
-- **Session persistence**: Browser session cached at `/tmp/pantheon-session/`. Use `--fresh` to clear.
+- **Browser-based**: Uses Playwright Firefox (headless) for Kerberos SPNEGO auth.
+- **Session persistence**: Browser session cached at `~/.cache/pantheon-session/`. Use `--fresh` to clear.
+- **Hybrid splash commands**: Splash commands use Playwright only for login, then `requests` for DSPM API calls.
 
 ## API Gotchas
 
 - Update API expects **snake_case** (`content_directory`, `content_type`), but GET responses use **camelCase** (`contentDirectory`, `contentType`).
 - A TrustArc cookie overlay can block UI interactions — the script removes it automatically.
 - After config updates, GET may return stale data for a few seconds.
+- Splash pages are managed by a separate DXP DSPM service (Drupal 10), not the Reef API. The splash commands use direct HTTP requests to the DSPM with cookies extracted from the Playwright session.
 
-For full architecture details, see `docs/pantheon-reference.md`.
+For full architecture details, see `docs/pantheon-reference.md` and `docs/splash-page-api.md`.

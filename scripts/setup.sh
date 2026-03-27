@@ -14,7 +14,6 @@ fi
 # Create ~/bin symlinks
 mkdir -p ~/bin
 ln -sf "$REPO_ROOT/scripts/pantheon-cli" ~/bin/pantheon-cli
-ln -sf "$REPO_ROOT/scripts/visual-diff" ~/bin/visual-diff
 
 # Install Playwright Firefox browser if needed
 if ! venv/bin/python -c "from playwright.sync_api import sync_playwright" 2>/dev/null; then

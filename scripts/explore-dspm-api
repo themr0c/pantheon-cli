@@ -31,7 +31,7 @@ if _env_file.is_file():
 from playwright.sync_api import sync_playwright
 
 PANTHEON_URL = "https://pantheon.cee.redhat.com"
-SESSION_DIR = Path("/tmp/pantheon-session")
+SESSION_DIR = str(Path.home() / ".cache" / "pantheon-explore-dspm-api")
 
 def print_section(title):
     """Print a section header."""

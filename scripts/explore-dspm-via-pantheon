@@ -31,7 +31,7 @@ if _env_file.is_file():
 from playwright.sync_api import sync_playwright
 
 PANTHEON_URL = "https://pantheon.cee.redhat.com/"
-SESSION_DIR = "/tmp/pantheon-session"
+SESSION_DIR = str(Path.home() / ".cache" / "pantheon-explore-dspm-via-pantheon")
 DSPM_DOMAIN = "dxp-dspm-prod.apps.int.drop.prod.us-west-2.aws.paas.redhat.com"
 
 # Capture all network requests to the DSPM domain

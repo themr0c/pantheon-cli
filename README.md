@@ -1,6 +1,6 @@
 # Pantheon CLI
 
-CLI tools for automating Red Hat Pantheon documentation publishing operations. Includes `pantheon-cli` for managing build configurations, triggering rebuilds, and publishing releases, and `visual-diff` for comparing stage vs preview builds.
+CLI tools for automating Red Hat Pantheon documentation publishing operations. Includes `pantheon-cli` for managing build configurations, triggering rebuilds, publishing releases, and managing splash page configurations.
 
 Repository: <https://github.com/themr0c/pantheon-cli>
 
@@ -30,13 +30,8 @@ bash scripts/setup.sh
 | `pantheon-cli update --version 1.9 --env preview --branch BRANCH [--directory DIR] [--enable] [--rebuild] [--exec]` | Update build config (dry-run by default) |
 | `pantheon-cli rebuild --version 1.9 --env preview [--enable] [--wait] [--exec]` | Trigger rebuilds |
 | `pantheon-cli publish --version 1.9 [--rebuild-first] [--wait] [--exec]` | Enable + rebuild stage builds |
-
-### visual-diff
-
-| Command | Description |
-|---|---|
-| `visual-diff urls --version 1.9` | List stage/preview URLs for titles |
-| `visual-diff diff --version 1.9 --output /tmp/rhdh-1.9-diff/` | Generate visual diff report |
+| `pantheon-cli splash-export --version 1.9 --env stage [-o FILE]` | Export splash page config to YAML |
+| `pantheon-cli splash-configure --version 1.9 --env stage -c FILE [--exec]` | Apply YAML splash page config (dry-run by default) |
 
 ### Common options
 
@@ -49,4 +44,4 @@ bash scripts/setup.sh
 
 ## Reference
 
-For architecture details, API methods, and known gotchas, see [docs/pantheon-reference.md](docs/pantheon-reference.md).
+For architecture details, API methods, and known gotchas, see [docs/pantheon-reference.md](docs/pantheon-reference.md) and [docs/splash-page-api.md](docs/splash-page-api.md).

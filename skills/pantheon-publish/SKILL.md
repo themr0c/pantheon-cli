@@ -39,4 +39,3 @@ pantheon-cli publish --version <VERSION> --exec --rebuild-first --wait
 2. Review what will be published: `pantheon-cli publish --version <V>`
 3. Enable and rebuild: `pantheon-cli publish --version <V> --exec --rebuild-first --wait`
 4. Verify stage builds: `pantheon-cli list --version <V> --env stage`
-5. Visual comparison: `visual-diff diff --version <V>`

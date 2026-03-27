@@ -31,7 +31,7 @@ from playwright.sync_api import sync_playwright
 
 # Constants
 PANTHEON_URL = "https://pantheon.cee.redhat.com/"
-SESSION_DIR = "/tmp/pantheon-session"
+SESSION_DIR = str(Path.home() / ".cache" / "pantheon-explore-splash-api")
 
 CONFIGURED_SPLASH = "https://pantheon.cee.redhat.com/#/splash-pages/red_hat_developer_hub/1.9/stage"
 UNCONFIGURED_SPLASH = "https://pantheon.cee.redhat.com/#/splash-pages/red_hat_developer_hub/1.10/stage"

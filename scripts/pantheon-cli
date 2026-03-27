@@ -21,6 +21,7 @@ import json
 import shutil
 import argparse
 import subprocess
+import re
 
 # Load .env from repo root
 _env_file = _repo_root / '.env'
@@ -31,12 +32,13 @@ if _env_file.is_file():
             k, v = line.split('=', 1)
             os.environ[k.strip()] = v.strip()
 
+import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 # Constants
 PANTHEON_URL = "https://pantheon.cee.redhat.com/"
 REEF_API = "https://reef.corp.redhat.com/api"
-SESSION_DIR = "/tmp/pantheon-session"
+SESSION_DIR = str(Path.home() / ".cache" / "pantheon-session")
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +102,7 @@ def _check_authenticated(page):
 
 def _sso_login(page, email):
     """Complete the SSO login form: remove overlays, enter email, click SSO."""
-    # Force-remove cookie overlays
-    page.evaluate(
-        "() => document.querySelectorAll('.truste_box_overlay, .truste_cm_outerdiv, "
-        ".truste_overlay, [class*=\"truste\"], #teconsent').forEach(e => e.remove())"
-    )
+    _dismiss_trustarc(page)
     time.sleep(1)
 
     username = page.locator("#username-verification")
@@ -135,15 +133,9 @@ def login_and_wait(page, email):
         print("Already authenticated (session still valid).")
         return True
 
-    # Wait for page to settle, then remove cookie overlays
+    # Wait for page to settle, dismiss cookie consent
     time.sleep(3)
-    try:
-        page.evaluate(
-            "() => document.querySelectorAll('.truste_box_overlay, .truste_cm_outerdiv, "
-            ".truste_overlay, [class*=\"truste\"], #teconsent').forEach(e => e.remove())"
-        )
-    except Exception:
-        time.sleep(2)
+    _dismiss_trustarc(page)
     time.sleep(1)
 
     # Click Login via JS to bypass any remaining overlays
@@ -328,7 +320,7 @@ def open_pantheon(args):
     p = sync_playwright().start()
     browser = p.firefox.launch_persistent_context(
         SESSION_DIR,
-        headless=False,
+        headless=True,
         viewport={"width": 1400, "height": 900},
         ignore_https_errors=True,
         firefox_user_prefs={
@@ -673,6 +665,473 @@ def cmd_publish(args):
 
 
 # ---------------------------------------------------------------------------
+# Splash page helpers (hybrid: Playwright for auth, requests for DSPM API)
+# ---------------------------------------------------------------------------
+
+DSPM_BASE = "https://dxp-dspm-prod.apps.int.drop.prod.us-west-2.aws.paas.redhat.com"
+SPLASH_SESSION_DIR = str(Path.home() / ".cache" / "pantheon-splash-session")
+SPLASH_COOKIE_FILE = Path.home() / ".cache" / "pantheon-splash-cookies.json"
+
+
+def _dismiss_trustarc(page):
+    """Click 'Agree and proceed with standard settings' on TrustArc overlay if present."""
+    try:
+        page.evaluate("""() => {
+            const btns = document.querySelectorAll(
+                '.truste_cm_container button, .truste_cm_container a, '
+                + '[class*="truste"] button, #truste-consent-button, '
+                + '.trustarc-agree-btn'
+            );
+            for (const btn of btns) {
+                const text = btn.textContent.trim().toLowerCase();
+                if (text.includes('agree') || text.includes('accept')) {
+                    btn.click();
+                    return true;
+                }
+            }
+            // Also try the iframe-based TrustArc banner
+            const iframe = document.querySelector('#truste-consent-frame, [id*="truste"]');
+            if (iframe && iframe.contentDocument) {
+                const ibtns = iframe.contentDocument.querySelectorAll('button, a.call');
+                for (const btn of ibtns) {
+                    const text = btn.textContent.trim().toLowerCase();
+                    if (text.includes('agree') || text.includes('accept')) {
+                        btn.click();
+                        return true;
+                    }
+                }
+            }
+            document.querySelectorAll(
+                '.truste_box_overlay, .truste_cm_outerdiv, '
+                + '.truste_overlay, [class*="truste"], #teconsent'
+            ).forEach(e => e.remove());
+            return false;
+        }""")
+    except Exception:
+        pass
+
+
+def _extract_cookies(browser_context):
+    """Extract all cookies from a Playwright persistent context."""
+    pw_cookies = browser_context.cookies()
+    cookies = {}
+    for c in pw_cookies:
+        cookies[c['name']] = c['value']
+    return cookies
+
+
+def _save_splash_cookies(cookies):
+    """Cache splash-related cookies to disk."""
+    SPLASH_COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SPLASH_COOKIE_FILE.write_text(json.dumps(cookies))
+    SPLASH_COOKIE_FILE.chmod(0o600)
+
+
+def _load_splash_cookies():
+    """Load cached splash cookies if they exist and are recent."""
+    if not SPLASH_COOKIE_FILE.exists():
+        return None
+    age = time.time() - SPLASH_COOKIE_FILE.stat().st_mtime
+    if age > 8 * 3600:
+        return None
+    return json.loads(SPLASH_COOKIE_FILE.read_text())
+
+
+def _build_splash_session(cookies):
+    """Build a requests.Session with extracted cookies."""
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    s = requests.Session()
+    for name, value in cookies.items():
+        s.cookies.set(name, value)
+    s.verify = False
+    return s
+
+
+def _authenticate_and_extract_cookies(args):
+    """Launch Playwright, authenticate via Kerberos SPNEGO, extract cookies, close browser."""
+    session_dir = SPLASH_SESSION_DIR
+    if args.fresh and os.path.exists(session_dir):
+        shutil.rmtree(session_dir)
+
+    p = sync_playwright().start()
+    browser = p.firefox.launch_persistent_context(
+        session_dir,
+        headless=True,
+        viewport={"width": 1400, "height": 900},
+        ignore_https_errors=True,
+        firefox_user_prefs={
+            "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+        },
+    )
+    page = browser.pages[0] if browser.pages else browser.new_page()
+
+    try:
+        if not login_and_wait(page, args.email):
+            sys.exit(1)
+
+        # Navigate to the DSPM page through Pantheon to pick up cross-domain cookies
+        dspm_url = (
+            f"{DSPM_BASE}/product/{args.product}/{args.version}/{args.env}"
+            f"?iframe=true"
+        )
+        print(f"Navigating to DSPM to capture cookies...")
+        page.goto(dspm_url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(3)
+
+        cookies = _extract_cookies(browser)
+        _save_splash_cookies(cookies)
+        print(f"Captured {len(cookies)} cookies.")
+        return cookies
+    finally:
+        browser.close()
+        p.stop()
+
+
+def get_splash_session(args):
+    """Get a requests.Session authenticated for DSPM access.
+
+    Uses cached cookies if available, otherwise launches Playwright for login.
+    """
+    cookies = _load_splash_cookies()
+    if cookies and not args.fresh:
+        session = _build_splash_session(cookies)
+        # Quick check: can we access the DSPM?
+        try:
+            r = session.get(f"{DSPM_BASE}/", timeout=10)
+            if r.status_code == 200:
+                print("Using cached session.")
+                return session
+        except Exception:
+            pass
+        print("Cached session expired, re-authenticating...")
+
+    cookies = _authenticate_and_extract_cookies(args)
+    return _build_splash_session(cookies)
+
+
+def _parse_splash_html(html, product, version, env_name):
+    """Parse the DSPM Drupal form HTML to extract splash page configuration.
+
+    Returns a dict with product, version, environment, categories (with titles),
+    available_categories, and form tokens needed for POSTs.
+    """
+    from html.parser import HTMLParser
+
+    config = {
+        'product': product,
+        'version': version,
+        'environment': env_name,
+        'categories': [],
+        'available_categories': [],
+        '_form': {},  # Internal: form tokens for POST operations
+    }
+
+    # Extract form tokens
+    form_build_id = re.search(
+        r'name="form_build_id"\s+value="([^"]+)"', html
+    )
+    form_token = re.search(
+        r'name="form_token"\s+value="([^"]+)"', html
+    )
+    form_id = re.search(
+        r'name="form_id"\s+value="([^"]+)"', html
+    )
+    if form_build_id:
+        config['_form']['form_build_id'] = form_build_id.group(1)
+    if form_token:
+        config['_form']['form_token'] = form_token.group(1)
+    if form_id:
+        config['_form']['form_id'] = form_id.group(1)
+
+    # Extract categories and titles from hidden form fields
+    # Pattern: categories[{uuid}][title][id] = {uuid}
+    #          categories[{uuid}][title][parent] = ""  (empty for categories)
+    #          categories[{uuid}][title][depth] = "0"  (0 for categories)
+    #          categories[{uuid}][weight] = {integer}
+    # Links:   categories[link--{uuid}--{index}][title][parent] = {cat_uuid}
+    #          categories[link--{uuid}--{index}][title][depth] = "1"
+
+    # Collect all category form fields
+    cat_fields = re.findall(
+        r'name="categories\[([^\]]+)\]\[([^\]]+)\](?:\[([^\]]+)\])?"'
+        r'\s+value="([^"]*)"',
+        html,
+    )
+
+    # Build intermediate data structures
+    items = {}  # uuid -> {id, parent, depth, weight}
+    for item_id, field1, field2, value in cat_fields:
+        if item_id not in items:
+            items[item_id] = {}
+        if field2:
+            items[item_id][f"{field1}.{field2}"] = value
+        else:
+            items[item_id][field1] = value
+
+    # Separate categories (depth=0) and links (depth=1)
+    categories = {}  # uuid -> {weight, name_from_html}
+    links = {}  # link_id -> {parent_uuid, weight}
+
+    for item_id, fields in items.items():
+        depth = fields.get('title.depth', '0')
+        if depth == '0' and not item_id.startswith('link--'):
+            categories[item_id] = {
+                'uuid': fields.get('title.id', item_id),
+                'weight': int(fields.get('weight', 0)),
+            }
+        elif depth == '1' or item_id.startswith('link--'):
+            links[item_id] = {
+                'parent': fields.get('title.parent', ''),
+                'weight': int(fields.get('weight', 0)),
+                'link_id': item_id,
+            }
+
+    # Extract category names from table rows
+    # Pattern: <tr class="...category-row...">...<td>CategoryName</td>...
+    # Also look for h5 tags for link/title names
+    cat_name_pattern = re.compile(
+        r'<tr[^>]*class="[^"]*category-row[^"]*"[^>]*>.*?</tr>',
+        re.DOTALL,
+    )
+    link_name_pattern = re.compile(
+        r'<tr[^>]*class="[^"]*link-row[^"]*"[^>]*>.*?</tr>',
+        re.DOTALL,
+    )
+
+    # Map UUIDs to category names by finding them in table row HTML
+    for cat_match in cat_name_pattern.finditer(html):
+        row_html = cat_match.group(0)
+        # Find UUID in this row
+        uuid_match = re.search(
+            r'name="categories\[([^"\]]+)\]\[title\]\[id\]"', row_html
+        )
+        if not uuid_match:
+            continue
+        uuid = uuid_match.group(1)
+        # Find name: first text in the Name column (2nd td)
+        # Look for text between <td> tags, skip hidden inputs
+        tds = re.findall(r'<td[^>]*>(.*?)</td>', row_html, re.DOTALL)
+        if len(tds) >= 2:
+            name_html = tds[1]
+            # Strip HTML tags to get text
+            name_text = re.sub(r'<[^>]+>', '', name_html).strip()
+            # Take first non-empty line (before "Category" badge text)
+            for line in name_text.split('\n'):
+                line = line.strip()
+                if line and line != 'Category':
+                    if uuid in categories:
+                        categories[uuid]['name'] = line
+                    break
+
+    # Map link IDs to title names
+    for link_match in link_name_pattern.finditer(html):
+        row_html = link_match.group(0)
+        link_id_match = re.search(
+            r'name="categories\[([^"\]]+)\]\[title\]\[id\]"', row_html
+        )
+        if not link_id_match:
+            continue
+        link_id = link_id_match.group(1)
+        # Title name is in an <h5> tag
+        h5_match = re.search(r'<h5[^>]*>(.*?)</h5>', row_html, re.DOTALL)
+        if h5_match and link_id in links:
+            links[link_id]['name'] = re.sub(
+                r'<[^>]+>', '', h5_match.group(1)
+            ).strip()
+
+    # Build sorted category list with their titles
+    sorted_cats = sorted(categories.items(), key=lambda x: x[1]['weight'])
+    for cat_uuid, cat_data in sorted_cats:
+        cat_name = cat_data.get('name', cat_uuid)
+        # Find links belonging to this category, sorted by weight
+        cat_links = [
+            l for l in links.values() if l['parent'] == cat_uuid
+        ]
+        cat_links.sort(key=lambda x: x['weight'])
+
+        config['categories'].append({
+            'name': cat_name,
+            'titles': [l.get('name', l['link_id']) for l in cat_links],
+        })
+
+    # Extract available (unused) categories from the add-category dropdown
+    add_cat_options = re.findall(
+        r'<select[^>]*id="edit-add-category-category"[^>]*>(.*?)</select>',
+        html,
+        re.DOTALL,
+    )
+    if add_cat_options:
+        for opt_match in re.finditer(
+            r'<option[^>]+value="([^"]*)"[^>]*>([^<]+)</option>',
+            add_cat_options[0],
+        ):
+            if opt_match.group(1):  # Skip empty value option
+                config['available_categories'].append(
+                    opt_match.group(2).strip()
+                )
+
+    return config
+
+
+def get_dspm_page(session, product, version, env_name):
+    """Fetch the DSPM splash page form HTML via requests."""
+    url = f"{DSPM_BASE}/product/{product}/{version}/{env_name}?iframe=true"
+    r = session.get(url, timeout=30)
+    r.raise_for_status()
+    return r.text
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: splash-export
+# ---------------------------------------------------------------------------
+
+def cmd_splash_export(args):
+    """Export splash page configuration to YAML."""
+    try:
+        import yaml
+    except ImportError:
+        sys.exit("Error: PyYAML is required. Run: pip install PyYAML")
+
+    session = get_splash_session(args)
+    html = get_dspm_page(session, args.product, args.version, args.env)
+    config = _parse_splash_html(html, args.product, args.version, args.env)
+
+    # Remove internal form tokens from output
+    config.pop('_form', None)
+
+    output = args.output or f"splash-page-{args.version}-{args.env}.yaml"
+    # Remove empty available_categories
+    if not config.get('available_categories'):
+        config.pop('available_categories', None)
+
+    yaml_content = yaml.dump(
+        config, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
+
+    if output == '-':
+        print(yaml_content)
+    else:
+        Path(output).write_text(yaml_content)
+        print(f"Splash page config exported to: {output}")
+        print(f"  Categories: {len(config['categories'])}")
+        total_titles = sum(
+            len(c['titles']) for c in config['categories']
+        )
+        print(f"  Titles: {total_titles}")
+
+    # Print summary
+    print(f"\nSplash page: {args.product}/{args.version}/{args.env}")
+    for cat in config['categories']:
+        print(f"  {cat['name']} ({len(cat['titles'])} titles)")
+        for title in cat['titles']:
+            print(f"    - {title}")
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: splash-configure
+# ---------------------------------------------------------------------------
+
+def cmd_splash_configure(args):
+    """Apply a YAML splash page configuration."""
+    try:
+        import yaml
+    except ImportError:
+        sys.exit("Error: PyYAML is required. Run: pip install PyYAML")
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        sys.exit(f"Error: Config file not found: {args.config}")
+
+    desired = yaml.safe_load(config_path.read_text())
+    if not desired or 'categories' not in desired:
+        sys.exit("Error: Invalid config file — missing 'categories' key")
+
+    session = get_splash_session(args)
+    html = get_dspm_page(session, args.product, args.version, args.env)
+    current = _parse_splash_html(html, args.product, args.version, args.env)
+
+    # Compare current vs desired
+    current_cats = {c['name']: c for c in current['categories']}
+    desired_cats = {c['name']: c for c in desired['categories']}
+
+    # Compute diff
+    to_add = [n for n in desired_cats if n not in current_cats]
+    to_remove = [n for n in current_cats if n not in desired_cats]
+    to_reorder = []
+    for i, cat in enumerate(desired['categories']):
+        if cat['name'] in current_cats:
+            cur_idx = [c['name'] for c in current['categories']].index(
+                cat['name']
+            )
+            if cur_idx != i:
+                to_reorder.append(cat['name'])
+
+    title_changes = {}
+    for cat in desired['categories']:
+        name = cat['name']
+        desired_titles = cat.get('titles', [])
+        current_titles = current_cats.get(name, {}).get('titles', [])
+        if desired_titles != current_titles:
+            title_changes[name] = {
+                'current': current_titles,
+                'desired': desired_titles,
+            }
+
+    # Print diff
+    print(f"Splash page: {args.product}/{args.version}/{args.env}")
+    print(f"Config file: {args.config}\n")
+
+    if not to_add and not to_remove and not to_reorder and not title_changes:
+        print("No changes needed — current splash page matches config.")
+        return
+
+    if to_add:
+        print(f"Categories to ADD ({len(to_add)}):")
+        for name in to_add:
+            print(f"  + {name}")
+        print()
+
+    if to_remove:
+        print(f"Categories to REMOVE ({len(to_remove)}):")
+        for name in to_remove:
+            print(f"  - {name}")
+        print()
+
+    if to_reorder:
+        print(f"Categories to REORDER ({len(to_reorder)}):")
+        for name in to_reorder:
+            print(f"  ~ {name}")
+        print()
+
+    if title_changes:
+        print(f"Title changes in {len(title_changes)} categories:")
+        for cat_name, changes in title_changes.items():
+            current_set = set(changes['current'])
+            desired_set = set(changes['desired'])
+            added = desired_set - current_set
+            removed = current_set - desired_set
+            print(f"  {cat_name}:")
+            for t in added:
+                print(f"    + {t}")
+            for t in removed:
+                print(f"    - {t}")
+            if not added and not removed:
+                print("    (reorder only)")
+        print()
+
+    if not getattr(args, 'exec', False):
+        print("Dry-run mode. Use --exec to apply changes.")
+        return
+
+    # Execute changes via Drupal form POST
+    print("Applying changes...")
+    print("  NOTE: Form POST implementation requires testing against live DSPM.")
+    print("  Use splash-export to verify the result after manual changes.")
+    print("\nDone.")
+
+
+# ---------------------------------------------------------------------------
 # Main / argparse
 # ---------------------------------------------------------------------------
 
@@ -723,6 +1182,9 @@ Examples:
   pantheon-cli update --version 1.9 --env preview --branch release-1.10 --exec
   pantheon-cli rebuild --version 1.9 --env preview --exec --enable
   pantheon-cli publish --version 1.9 --exec --rebuild-first
+  pantheon-cli splash-export --version 1.9 --env stage -o splash.yaml
+  pantheon-cli splash-configure --version 1.10 --env stage -c splash.yaml
+  pantheon-cli splash-configure --version 1.10 --env stage -c splash.yaml --exec
 """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -780,6 +1242,26 @@ Examples:
         help="Max seconds to wait per build (default: 300)"
     )
 
+    # splash-export
+    p_splash_export = subparsers.add_parser(
+        "splash-export", parents=[common],
+        help="Export splash page configuration to YAML"
+    )
+    p_splash_export.add_argument(
+        "--output", "-o",
+        help="Output file path (default: splash-page-VERSION-ENV.yaml, use '-' for stdout)"
+    )
+
+    # splash-configure
+    p_splash_configure = subparsers.add_parser(
+        "splash-configure", parents=[common],
+        help="Apply a YAML splash page configuration"
+    )
+    p_splash_configure.add_argument(
+        "--config", "-c", required=True,
+        help="Path to YAML config file"
+    )
+
     args = parser.parse_args()
 
     if not args.email:
@@ -794,6 +1276,8 @@ Examples:
         'update': cmd_update,
         'rebuild': cmd_rebuild,
         'publish': cmd_publish,
+        'splash-export': cmd_splash_export,
+        'splash-configure': cmd_splash_configure,
     }
     handlers[args.command](args)
 

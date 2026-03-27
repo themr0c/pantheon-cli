@@ -16,13 +16,13 @@ Explore Pantheon documentation configuration to understand the current state bef
 
 ## Tools Available
 
-Run `pantheon-cli` and `visual-diff` commands in read-only mode (no `--exec` flag).
+Run `pantheon-cli` commands in read-only mode (no `--exec` flag).
 
 ## Exploration Workflow
 
 1. Check prerequisites: `klist -s` for Kerberos, verify VPN
 2. List titles: `pantheon-cli list --version <V>`
-3. Compare environments: `visual-diff urls --version <V>`
+3. Export splash config: `pantheon-cli splash-export --version <V> --env stage -o -`
 4. Report findings with actionable recommendations
 
 ## Safety
