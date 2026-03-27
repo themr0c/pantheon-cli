@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pantheon-cli:*)",
+      "Bash(~/bin/pantheon-cli:*)",
+      "Bash(visual-diff:*)",
+      "Bash(~/bin/visual-diff:*)",
+      "Bash(bash scripts/setup.sh:*)",
+      "Bash(kinit:*)",
+      "Bash(klist:*)"
+    ]
+  }
+}

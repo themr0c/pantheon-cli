@@ -1,0 +1,7 @@
+{
+  "name": "pantheon-cli",
+  "version": "1.0.0",
+  "description": "Automate Red Hat Pantheon documentation publishing: list titles, update build configs, trigger rebuilds, publish releases, and compare builds visually.",
+  "repository": "https://github.com/themr0c/pantheon-cli",
+  "license": "Apache-2.0"
+}
