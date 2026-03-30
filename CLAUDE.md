@@ -62,7 +62,7 @@ All logic lives in the single script `scripts/pantheon-cli`. There are no module
 
 Both auth layers use the headless→headed fallback pattern and the `--fresh` flag to force re-authentication.
 
-**Reef API** is the internal Jenkins/build orchestration service at `reef.corp.redhat.com`. Build operations (`toggleJenkinsJob`, `startJenkinsJob`, `updateTitleEnvBuildConfig`) are invoked via Angular's `reefService` injected into the page — not as direct HTTP calls — because that service handles CSRF tokens transparently.
+**Reef API** is the internal Jenkins/build orchestration service at `reef.corp.redhat.com`. All operations (read and write) are direct HTTP calls via `requests` using session cookies.
 
 **DSPM** is a separate Drupal 10 service managing splash pages, unrelated to Reef. Its form HTML must be parsed with regex (no JSON API) to extract category/title structure and form tokens for POST operations.
 
