@@ -63,25 +63,15 @@ def check_kerberos():
 # Browser / Auth layer
 # ---------------------------------------------------------------------------
 
-def reef_get(page, endpoint):
-    """GET request to Reef API via browser XHR."""
+def reef_get(session, endpoint):
+    """GET request to Reef API via requests session."""
     url = f"{REEF_API}/{endpoint}"
-    response = page.evaluate("""(url) => {
-        return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', url, true);
-            xhr.withCredentials = true;
-            xhr.onload = () => resolve({status: xhr.status, body: xhr.responseText});
-            xhr.onerror = () => reject('XHR error: ' + xhr.statusText);
-            xhr.send();
-        });
-    }""", url)
-    if response['status'] != 200:
+    r = session.get(url, timeout=30)
+    if r.status_code != 200:
         raise RuntimeError(
-            f"Reef GET {endpoint}: HTTP {response['status']}: "
-            f"{response['body'][:200]}"
+            f"Reef GET {endpoint}: HTTP {r.status_code}: {r.text[:200]}"
         )
-    return json.loads(response['body'])
+    return r.json()
 
 
 def _check_authenticated(page):
@@ -185,20 +175,20 @@ def login_and_wait(page, email):
 # Reef service wrappers
 # ---------------------------------------------------------------------------
 
-def get_titles(page, product, version):
+def get_titles(session, product, version):
     """Get all titles for a product/version."""
     data = reef_get(
-        page,
+        session,
         f"lightblue/get_titles?combineBrewed=false&lang=en-US"
         f"&product={product}&version={version}"
     )
     return data['data']['products'][0]['versions'][0]['titles']
 
 
-def get_build_config(page, uuid, env="preview"):
+def get_build_config(session, uuid, env="preview"):
     """Get current build config for a title."""
     data = reef_get(
-        page,
+        session,
         f"lightblue/get_title_build_config?uuid={uuid}&lang=en-US&environment={env}"
     )
     return data.get('data', {})
