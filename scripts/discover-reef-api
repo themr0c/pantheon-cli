@@ -83,7 +83,7 @@ def main():
     p = sync_playwright().start()
     browser = p.firefox.launch_persistent_context(
         SESSION_DIR,
-        headless=True,
+        headless=False,
         viewport={"width": 1400, "height": 900},
         ignore_https_errors=True,
         firefox_user_prefs={
