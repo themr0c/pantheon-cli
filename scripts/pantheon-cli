@@ -38,7 +38,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 # Constants
 PANTHEON_URL = "https://pantheon.cee.redhat.com/"
 REEF_API = "https://reef.corp.redhat.com/api"
-SESSION_DIR = str(Path.home() / ".cache" / "pantheon-session")
+CACHE_DIR = Path.home() / ".cache"
+SESSION_DIR = str(CACHE_DIR / "pantheon-session")
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +351,113 @@ def open_pantheon(args):
     print("Titles page loaded.\n")
 
     return p, browser, page
+
+
+# ---------------------------------------------------------------------------
+# Reef cookie auth (mirrors splash auth pattern)
+# ---------------------------------------------------------------------------
+
+def _load_reef_cookies():
+    """Load cached Reef cookies if they exist and are < 8 hours old."""
+    if not REEF_COOKIE_FILE.exists():
+        return None
+    age = time.time() - REEF_COOKIE_FILE.stat().st_mtime
+    if age > 8 * 3600:
+        return None
+    return json.loads(REEF_COOKIE_FILE.read_text())
+
+
+def _save_reef_cookies(cookies):
+    """Cache Reef cookies to disk."""
+    REEF_COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    REEF_COOKIE_FILE.write_text(json.dumps(cookies))
+    REEF_COOKIE_FILE.chmod(0o600)
+
+
+def _build_reef_session(cookies):
+    """Build a requests.Session with Reef auth cookies."""
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    s = requests.Session()
+    for name, value in cookies.items():
+        s.cookies.set(name, value)
+    s.verify = False
+    return s
+
+
+def _authenticate_and_extract_reef_cookies(args):
+    """Launch Playwright Firefox, login via Kerberos SPNEGO, extract cookies.
+
+    Tries headless first. Falls back to headed if headless SPNEGO fails.
+    """
+    if args.fresh and os.path.exists(REEF_SESSION_DIR):
+        shutil.rmtree(REEF_SESSION_DIR)
+
+    for headless in (True, False):
+        p = sync_playwright().start()
+        browser = p.firefox.launch_persistent_context(
+            REEF_SESSION_DIR,
+            headless=headless,
+            viewport={"width": 1400, "height": 900},
+            ignore_https_errors=True,
+            firefox_user_prefs={
+                "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+            },
+        )
+        page = browser.pages[0] if browser.pages else browser.new_page()
+
+        try:
+            if login_and_wait(page, args.email):
+                cookies = _extract_cookies(browser)
+                _save_reef_cookies(cookies)
+                print(f"Reef session: captured {len(cookies)} cookies.")
+                return cookies
+
+            if headless:
+                print("Headless auth failed, retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            else:
+                sys.exit("ERROR: Authentication failed.")
+        except SystemExit:
+            raise
+        except Exception as e:
+            if headless:
+                print(f"Headless auth error ({e}), retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            raise
+        finally:
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
+
+
+def get_reef_session(args):
+    """Get a requests.Session authenticated for Reef API access.
+
+    Uses cached cookies if available; otherwise launches Playwright for login.
+    """
+    cookies = _load_reef_cookies()
+    if cookies and not args.fresh:
+        session = _build_reef_session(cookies)
+        try:
+            r = session.get(
+                f"{REEF_API}/lightblue/get_products", timeout=10
+            )
+            if r.status_code == 200:
+                print("Using cached Reef session.")
+                return session
+        except Exception:
+            pass
+        print("Cached Reef session expired, re-authenticating...")
+
+    cookies = _authenticate_and_extract_reef_cookies(args)
+    return _build_reef_session(cookies)
 
 
 # ---------------------------------------------------------------------------
@@ -669,8 +777,11 @@ def cmd_publish(args):
 # ---------------------------------------------------------------------------
 
 DSPM_BASE = "https://dxp-dspm-prod.apps.int.drop.prod.us-west-2.aws.paas.redhat.com"
-SPLASH_SESSION_DIR = str(Path.home() / ".cache" / "pantheon-splash-session")
-SPLASH_COOKIE_FILE = Path.home() / ".cache" / "pantheon-splash-cookies.json"
+SPLASH_SESSION_DIR = str(CACHE_DIR / "pantheon-splash-session")
+SPLASH_COOKIE_FILE = CACHE_DIR / "pantheon-splash-cookies.json"
+
+REEF_SESSION_DIR = str(CACHE_DIR / "pantheon-reef-session")
+REEF_COOKIE_FILE = CACHE_DIR / "pantheon-reef-cookies.json"
 
 
 def _dismiss_trustarc(page):
@@ -749,43 +860,67 @@ def _build_splash_session(cookies):
 
 
 def _authenticate_and_extract_cookies(args):
-    """Launch Playwright, authenticate via Kerberos SPNEGO, extract cookies, close browser."""
+    """Launch Playwright, authenticate via Kerberos SPNEGO, extract cookies, close browser.
+
+    Tries headless first (fast, no UI). Falls back to headed mode if headless
+    auth fails (needed for initial Kerberos SPNEGO negotiation).
+    """
     session_dir = SPLASH_SESSION_DIR
     if args.fresh and os.path.exists(session_dir):
         shutil.rmtree(session_dir)
 
-    p = sync_playwright().start()
-    browser = p.firefox.launch_persistent_context(
-        session_dir,
-        headless=True,
-        viewport={"width": 1400, "height": 900},
-        ignore_https_errors=True,
-        firefox_user_prefs={
-            "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
-        },
-    )
-    page = browser.pages[0] if browser.pages else browser.new_page()
-
-    try:
-        if not login_and_wait(page, args.email):
-            sys.exit(1)
-
-        # Navigate to the DSPM page through Pantheon to pick up cross-domain cookies
-        dspm_url = (
-            f"{DSPM_BASE}/product/{args.product}/{args.version}/{args.env}"
-            f"?iframe=true"
+    for headless in (True, False):
+        p = sync_playwright().start()
+        browser = p.firefox.launch_persistent_context(
+            session_dir,
+            headless=headless,
+            viewport={"width": 1400, "height": 900},
+            ignore_https_errors=True,
+            firefox_user_prefs={
+                "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+            },
         )
-        print(f"Navigating to DSPM to capture cookies...")
-        page.goto(dspm_url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(3)
+        page = browser.pages[0] if browser.pages else browser.new_page()
 
-        cookies = _extract_cookies(browser)
-        _save_splash_cookies(cookies)
-        print(f"Captured {len(cookies)} cookies.")
-        return cookies
-    finally:
-        browser.close()
-        p.stop()
+        try:
+            if login_and_wait(page, args.email):
+                # Navigate to the DSPM page to pick up cross-domain cookies
+                dspm_url = (
+                    f"{DSPM_BASE}/product/{args.product}/{args.version}/{args.env}"
+                    f"?iframe=true"
+                )
+                print("Navigating to DSPM to capture cookies...")
+                page.goto(dspm_url, wait_until="domcontentloaded", timeout=30000)
+                time.sleep(3)
+
+                cookies = _extract_cookies(browser)
+                _save_splash_cookies(cookies)
+                print(f"Captured {len(cookies)} cookies.")
+                return cookies
+
+            # Auth failed — try headed mode next
+            if headless:
+                print("Headless auth failed, retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            else:
+                sys.exit("ERROR: Authentication failed.")
+        except SystemExit:
+            raise
+        except Exception as e:
+            if headless:
+                print(f"Headless auth error ({e}), retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            raise
+        finally:
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
 
 
 def get_splash_session(args):
