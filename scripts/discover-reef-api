@@ -51,6 +51,12 @@ def main():
     parser.add_argument("--product", default="red_hat_developer_hub")
     parser.add_argument("--env", default="preview")
     parser.add_argument("--email", default=os.environ.get("SSO_EMAIL", ""))
+    parser.add_argument(
+        "--only",
+        choices=["update", "toggle", "start", "all"],
+        default="all",
+        help="Which operation to intercept (default: all)",
+    )
     args = parser.parse_args()
 
     if not args.email:
@@ -137,34 +143,39 @@ def main():
     # Install route interceptor before triggering writes
     page.route("**reef.corp.redhat.com**", intercept_write)
 
-    print("Calling updateTitleEnvBuildConfig...")
-    page.evaluate("""([uuid, lang, env, branch, dir, contentType]) => {
-        const injector = angular.element(document.body).injector();
-        const reef = injector.get('reefService');
-        reef.updateTitleEnvBuildConfig(uuid, lang, env, {
-            branch: branch,
-            content_directory: dir,
-            content_type: contentType
-        }).catch(() => {});
-    }""", [uuid, "en-US", args.env, current_branch, current_dir, content_type])
-    time.sleep(2)
+    only = args.only
+
+    if only in ("update", "all"):
+        print("Calling updateTitleEnvBuildConfig...")
+        page.evaluate("""([uuid, lang, env, branch, dir, contentType]) => {
+            const injector = angular.element(document.body).injector();
+            const reef = injector.get('reefService');
+            reef.updateTitleEnvBuildConfig(uuid, lang, env, {
+                branch: branch,
+                content_directory: dir,
+                content_type: contentType
+            }).catch(() => {});
+        }""", [uuid, "en-US", args.env, current_branch, current_dir, content_type])
+        time.sleep(2)
 
     if job_name:
-        print("Calling toggleJenkinsJob...")
-        page.evaluate("""([jobName]) => {
-            const injector = angular.element(document.body).injector();
-            const reef = injector.get('reefService');
-            try { reef.toggleJenkinsJob(jobName, false); } catch(e) {}
-        }""", [job_name])
-        time.sleep(2)
+        if only in ("toggle", "all"):
+            print("Calling toggleJenkinsJob...")
+            page.evaluate("""([jobName]) => {
+                const injector = angular.element(document.body).injector();
+                const reef = injector.get('reefService');
+                try { reef.toggleJenkinsJob(jobName, false); } catch(e) {}
+            }""", [job_name])
+            time.sleep(2)
 
-        print("Calling startJenkinsJob...")
-        page.evaluate("""([jobName]) => {
-            const injector = angular.element(document.body).injector();
-            const reef = injector.get('reefService');
-            try { reef.startJenkinsJob({jobName: jobName}); } catch(e) {}
-        }""", [job_name])
-        time.sleep(2)
+        if only in ("start", "all"):
+            print("Calling startJenkinsJob...")
+            page.evaluate("""([jobName]) => {
+                const injector = angular.element(document.body).injector();
+                const reef = injector.get('reefService');
+                try { reef.startJenkinsJob({jobName: jobName}); } catch(e) {}
+            }""", [job_name])
+            time.sleep(2)
     else:
         print(f"(No job found for env={args.env}, skipping toggle/start)")
 
