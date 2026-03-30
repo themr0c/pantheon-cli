@@ -39,7 +39,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 PANTHEON_URL = "https://pantheon.cee.redhat.com/"
 REEF_API = "https://reef.corp.redhat.com/api"
 CACHE_DIR = Path.home() / ".cache"
-SESSION_DIR = str(CACHE_DIR / "pantheon-session")
 
 
 # ---------------------------------------------------------------------------
@@ -273,44 +272,6 @@ def filter_titles(titles, patterns):
 # Browser context manager
 # ---------------------------------------------------------------------------
 
-def open_pantheon(args):
-    """Launch browser, authenticate, navigate to titles page. Returns (browser, page)."""
-    if args.fresh and os.path.exists(SESSION_DIR):
-        shutil.rmtree(SESSION_DIR)
-
-    p = sync_playwright().start()
-    browser = p.firefox.launch_persistent_context(
-        SESSION_DIR,
-        headless=True,
-        viewport={"width": 1400, "height": 900},
-        ignore_https_errors=True,
-        firefox_user_prefs={
-            "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
-        },
-    )
-    page = browser.pages[0] if browser.pages else browser.new_page()
-
-    if not login_and_wait(page, args.email):
-        browser.close()
-        p.stop()
-        sys.exit(1)
-
-    titles_url = (
-        f"{PANTHEON_URL}#/titles/{args.product}/{args.version}"
-    )
-    page.goto(titles_url, wait_until="domcontentloaded", timeout=60000)
-    time.sleep(5)
-    try:
-        page.wait_for_selector("[ng-repeat*='title']", timeout=30000)
-    except PWTimeout:
-        print("ERROR: Could not load titles page.")
-        browser.close()
-        p.stop()
-        sys.exit(1)
-    time.sleep(2)
-    print("Titles page loaded.\n")
-
-    return p, browser, page
 
 
 # ---------------------------------------------------------------------------
