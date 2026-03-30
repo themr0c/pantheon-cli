@@ -97,6 +97,10 @@ def main():
         p.stop()
         sys.exit(1)
 
+    # Build a requests session from browser cookies for read API calls
+    cookies = cli._extract_cookies(browser)
+    session = cli._build_reef_session(cookies)
+
     # Navigate to titles page so Angular app and reefService are loaded
     titles_url = f"{cli.PANTHEON_URL}#/titles/{args.product}/{args.version}"
     page.goto(titles_url, wait_until="domcontentloaded", timeout=60000)
@@ -105,7 +109,7 @@ def main():
     time.sleep(2)
 
     # Find a matching title
-    titles = cli.get_titles(page, args.product, args.version)
+    titles = cli.get_titles(session, args.product, args.version)
     matching = [t for t in titles if args.title.lower() in t["name"].lower()]
     if not matching:
         print(f"No title matching '{args.title}' found. Available:")
@@ -119,7 +123,7 @@ def main():
     uuid = t["uuid"]
     job = t.get("jobs", {}).get(args.env, {})
     job_name = job.get("jobName", "")
-    config = cli.get_build_config(page, uuid, args.env)
+    config = cli.get_build_config(session, uuid, args.env)
     current_branch = config.get("branch", "main")
     current_dir = config.get("contentDirectory", "")
     content_type = config.get("contentType", "book")
