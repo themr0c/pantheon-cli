@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Discover Reef API endpoints by intercepting Angular reefService write calls.
+
+Run this once to capture the actual REST endpoints, HTTP methods, and request
+bodies used by updateTitleEnvBuildConfig, toggleJenkinsJob, and startJenkinsJob.
+Write requests are intercepted and aborted — no changes are made.
+
+Usage:
+    scripts/discover-reef-api --version 1.9 --title "My Title Name"
+"""
+
+import os
+import sys
+import json
+import time
+import importlib.util
+import argparse
+from pathlib import Path
+
+_script = Path(__file__).resolve()
+_repo_root = _script.parent.parent
+_venv_python = _repo_root / 'venv' / 'bin' / 'python'
+if _venv_python.is_file() and Path(sys.executable).resolve() != _venv_python.resolve():
+    os.execv(str(_venv_python), [str(_venv_python), str(_script)] + sys.argv[1:])
+
+_env_file = _repo_root / '.env'
+if _env_file.is_file():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            k, v = line.split('=', 1)
+            os.environ[k.strip()] = v.strip()
+
+
+def _load_cli():
+    spec = importlib.util.spec_from_file_location(
+        "pantheon_cli", _repo_root / "scripts" / "pantheon-cli"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--version", required=True, help="Product version, e.g. 1.9")
+    parser.add_argument("--title", required=True, help="Title name substring to match")
+    parser.add_argument("--product", default="red_hat_developer_hub")
+    parser.add_argument("--env", default="preview")
+    parser.add_argument("--email", default=os.environ.get("SSO_EMAIL", ""))
+    args = parser.parse_args()
+
+    if not args.email:
+        sys.exit("Error: Set SSO_EMAIL in .env or use --email")
+
+    cli = _load_cli()
+
+    from playwright.sync_api import sync_playwright
+    SESSION_DIR = str(Path.home() / ".cache" / "pantheon-session")
+
+    intercepted = []
+
+    def intercept_write(route, request):
+        """Log write requests and abort them — reads are allowed through."""
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            intercepted.append({
+                "method": request.method,
+                "url": request.url,
+                "post_data": request.post_data,
+                "headers": {
+                    k: v for k, v in request.headers.items()
+                    if k.lower() in ("content-type", "x-csrf-token", "authorization",
+                                     "x-xsrf-token", "referer")
+                },
+            })
+            route.abort()
+        else:
+            route.continue_()
+
+    p = sync_playwright().start()
+    browser = p.firefox.launch_persistent_context(
+        SESSION_DIR,
+        headless=True,
+        viewport={"width": 1400, "height": 900},
+        ignore_https_errors=True,
+        firefox_user_prefs={
+            "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+        },
+    )
+    page = browser.pages[0] if browser.pages else browser.new_page()
+
+    if not cli.login_and_wait(page, args.email):
+        browser.close()
+        p.stop()
+        sys.exit(1)
+
+    # Navigate to titles page so Angular app and reefService are loaded
+    titles_url = f"{cli.PANTHEON_URL}#/titles/{args.product}/{args.version}"
+    page.goto(titles_url, wait_until="domcontentloaded", timeout=60000)
+    time.sleep(5)
+    page.wait_for_selector("[ng-repeat*='title']", timeout=30000)
+    time.sleep(2)
+
+    # Find a matching title
+    titles = cli.get_titles(page, args.product, args.version)
+    matching = [t for t in titles if args.title.lower() in t["name"].lower()]
+    if not matching:
+        print(f"No title matching '{args.title}' found. Available:")
+        for t in titles[:10]:
+            print(f"  {t['name']}")
+        browser.close()
+        p.stop()
+        sys.exit(1)
+
+    t = matching[0]
+    uuid = t["uuid"]
+    job = t.get("jobs", {}).get(args.env, {})
+    job_name = job.get("jobName", "")
+    config = cli.get_build_config(page, uuid, args.env)
+    current_branch = config.get("branch", "main")
+    current_dir = config.get("contentDirectory", "")
+    content_type = config.get("contentType", "book")
+
+    print(f"\nTitle:   {t['name']}")
+    print(f"UUID:    {uuid}")
+    print(f"Job:     {job_name}")
+    print(f"Branch:  {current_branch}  Dir: {current_dir}")
+    print("\n--- Intercepting write operations (aborted, no changes made) ---")
+
+    # Install route interceptor before triggering writes
+    page.route("**reef.corp.redhat.com**", intercept_write)
+
+    print("Calling updateTitleEnvBuildConfig...")
+    page.evaluate("""([uuid, lang, env, branch, dir, contentType]) => {
+        const injector = angular.element(document.body).injector();
+        const reef = injector.get('reefService');
+        reef.updateTitleEnvBuildConfig(uuid, lang, env, {
+            branch: branch,
+            content_directory: dir,
+            content_type: contentType
+        }).catch(() => {});
+    }""", [uuid, "en-US", args.env, current_branch, current_dir, content_type])
+    time.sleep(2)
+
+    if job_name:
+        print("Calling toggleJenkinsJob...")
+        page.evaluate("""([jobName]) => {
+            const injector = angular.element(document.body).injector();
+            const reef = injector.get('reefService');
+            try { reef.toggleJenkinsJob(jobName, false); } catch(e) {}
+        }""", [job_name])
+        time.sleep(2)
+
+        print("Calling startJenkinsJob...")
+        page.evaluate("""([jobName]) => {
+            const injector = angular.element(document.body).injector();
+            const reef = injector.get('reefService');
+            try { reef.startJenkinsJob({jobName: jobName}); } catch(e) {}
+        }""", [job_name])
+        time.sleep(2)
+    else:
+        print(f"(No job found for env={args.env}, skipping toggle/start)")
+
+    browser.close()
+    p.stop()
+
+    print("\n" + "=" * 60)
+    print(f"INTERCEPTED {len(intercepted)} WRITE REQUEST(S):")
+    print("=" * 60)
+    for w in intercepted:
+        print(f"\n{w['method']} {w['url']}")
+        if w["headers"]:
+            print(f"  headers: {json.dumps(w['headers'], indent=4)}")
+        if w["post_data"]:
+            print(f"  body: {w['post_data'][:2000]}")
+    print("\n" + "=" * 60)
+    print("Update scripts/pantheon-cli with these endpoints and bodies.")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
