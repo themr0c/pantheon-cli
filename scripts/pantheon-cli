@@ -194,90 +194,60 @@ def get_build_config(session, uuid, env="preview"):
     return data.get('data', {})
 
 
-def update_build_config(page, uuid, env, branch, content_dir, content_type="book"):
-    """Update build config via Angular reefService.
+def update_build_config(session, uuid, env, branch, content_dir, content_type="book"):
+    """Update build config via direct Reef API call.
 
-    Note: The update API expects snake_case field names (content_directory,
-    content_type), while the GET response uses camelCase.
+    Endpoint verified via scripts/discover-reef-api — update URL if discovery
+    output shows a different path.
+    Note: API expects snake_case (content_directory, content_type).
     """
-    result = page.evaluate("""([uuid, lang, env, branch, dir, contentType]) => {
-        return new Promise((resolve) => {
-            const injector = angular.element(document.body).injector();
-            const reef = injector.get('reefService');
-            reef.updateTitleEnvBuildConfig(uuid, lang, env, {
-                branch: branch,
-                content_directory: dir,
-                content_type: contentType
-            }).then(function(r) {
-                resolve({ok: true, data: JSON.stringify(r.data || r).substring(0, 300)});
-            }).catch(function(err) {
-                resolve({ok: false, status: err.status,
-                         error: JSON.stringify(err.data || err).substring(0, 300)});
-            });
-        });
-    }""", [uuid, "en-US", env, branch, content_dir, content_type])
-    if not result['ok']:
+    r = session.post(
+        f"{REEF_API}/lightblue/update_title_build_config",
+        json={
+            "uuid": uuid,
+            "lang": "en-US",
+            "environment": env,
+            "branch": branch,
+            "content_directory": content_dir,
+            "content_type": content_type,
+        },
+    )
+    if not r.ok:
         raise RuntimeError(
-            f"Update failed (HTTP {result.get('status')}): {result.get('error')}"
+            f"Update failed (HTTP {r.status_code}): {r.text[:300]}"
         )
-    return result
+    return r.json()
 
 
-def toggle_job(page, job_name, enable):
-    """Enable or disable a Jenkins job.
+def toggle_job(session, job_name, enable):
+    """Enable or disable a Jenkins job via direct Reef API call.
 
-    toggleJenkinsJob(name, disabled) — second arg is 'disabled' boolean,
-    so to enable pass disabled=false, to disable pass disabled=true.
+    disabled=False means enabled. Endpoint verified via scripts/discover-reef-api.
     """
-    disabled = not enable
-    result = page.evaluate("""([jobName, disabled]) => {
-        return new Promise((resolve) => {
-            const injector = angular.element(document.body).injector();
-            const reef = injector.get('reefService');
-            try {
-                const r = reef.toggleJenkinsJob(jobName, disabled);
-                if (r && typeof r.then === 'function') {
-                    r.then(function(resp) {
-                        resolve({ok: true});
-                    }).catch(function(err) {
-                        resolve({ok: false,
-                                 error: JSON.stringify(err && err.data || err).substring(0, 300)});
-                    });
-                } else {
-                    resolve({ok: true});
-                }
-            } catch(e) {
-                resolve({ok: false, error: e.message});
-            }
-        });
-    }""", [job_name, disabled])
-    return result
+    r = session.post(
+        f"{REEF_API}/jenkins/toggle_jenkins_job",
+        json={
+            "jobName": job_name,
+            "disabled": not enable,
+        },
+    )
+    if not r.ok:
+        return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return {"ok": True}
 
 
-def start_build(page, job_name):
-    """Trigger a Jenkins build via reefService.startJenkinsJob."""
-    result = page.evaluate("""(jobName) => {
-        return new Promise((resolve) => {
-            const injector = angular.element(document.body).injector();
-            const reef = injector.get('reefService');
-            try {
-                const r = reef.startJenkinsJob({jobName: jobName});
-                if (r && typeof r.then === 'function') {
-                    r.then(function(resp) {
-                        resolve({ok: true});
-                    }).catch(function(err) {
-                        resolve({ok: false,
-                                 error: JSON.stringify(err && err.data || err).substring(0, 300)});
-                    });
-                } else {
-                    resolve({ok: true});
-                }
-            } catch(e) {
-                resolve({ok: false, error: e.message});
-            }
-        });
-    }""", job_name)
-    return result
+def start_build(session, job_name):
+    """Trigger a Jenkins build via direct Reef API call.
+
+    Endpoint verified via scripts/discover-reef-api.
+    """
+    r = session.post(
+        f"{REEF_API}/jenkins/start_jenkins_job",
+        json={"jobName": job_name},
+    )
+    if not r.ok:
+        return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -456,30 +426,25 @@ def get_reef_session(args):
 
 def cmd_list(args):
     """List titles for a product/version."""
-    p, browser, page = open_pantheon(args)
+    session = get_reef_session(args)
+    titles = get_titles(session, args.product, args.version)
+    titles = filter_titles(titles, args.title)
+    print(f"{'Name':<70} {'Env':<8} {'State':<10} {'Branch':<30} {'Content Dir'}")
+    print("-" * 160)
 
-    try:
-        titles = get_titles(page, args.product, args.version)
-        titles = filter_titles(titles, args.title)
-        print(f"{'Name':<70} {'Env':<8} {'State':<10} {'Branch':<30} {'Content Dir'}")
-        print("-" * 160)
-
-        for t in titles:
-            name = t['name']
-            for env_name in ['preview', 'stage']:
-                job = t.get('jobs', {}).get(env_name, {})
-                state = job.get('state', 'N/A') or 'N/A'
-                branch = job.get('gitBranch', 'N/A') or 'N/A'
-                # Get content dir from build config
-                if env_name == args.env or args.env == 'preview':
-                    config = get_build_config(page, t['uuid'], env_name)
-                    content_dir = config.get('contentDirectory', 'N/A')
-                else:
-                    content_dir = ''
-                print(f"{name:<70} {env_name:<8} {state:<10} {branch:<30} {content_dir}")
-    finally:
-        browser.close()
-        p.stop()
+    for t in titles:
+        name = t['name']
+        for env_name in ['preview', 'stage']:
+            job = t.get('jobs', {}).get(env_name, {})
+            state = job.get('state', 'N/A') or 'N/A'
+            branch = job.get('gitBranch', 'N/A') or 'N/A'
+            # Get content dir from build config
+            if env_name == args.env or args.env == 'preview':
+                config = get_build_config(session, t['uuid'], env_name)
+                content_dir = config.get('contentDirectory', 'N/A')
+            else:
+                content_dir = ''
+            print(f"{name:<70} {env_name:<8} {state:<10} {branch:<30} {content_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -492,113 +457,108 @@ def cmd_update(args):
         print("ERROR: Specify at least --branch, --directory, or --enable.")
         sys.exit(1)
 
-    p, browser, page = open_pantheon(args)
+    session = get_reef_session(args)
+    titles = get_titles(session, args.product, args.version)
+    titles = filter_titles(titles, args.title)
+    print(f"Found {len(titles)} matching titles\n")
 
-    try:
-        titles = get_titles(page, args.product, args.version)
-        titles = filter_titles(titles, args.title)
-        print(f"Found {len(titles)} matching titles\n")
+    if not titles:
+        print("No titles match the filter.")
+        return
 
-        if not titles:
-            print("No titles match the filter.")
-            return
+    # Analyze what needs to change
+    updates = []
+    for t in titles:
+        config = get_build_config(session, t['uuid'], args.env)
+        job = t.get('jobs', {}).get(args.env, {})
+        job_name = job.get('jobName', '')
+        state = job.get('state', '')
 
-        # Analyze what needs to change
-        updates = []
-        for t in titles:
-            config = get_build_config(page, t['uuid'], args.env)
-            job = t.get('jobs', {}).get(args.env, {})
-            job_name = job.get('jobName', '')
-            state = job.get('state', '')
+        current_branch = config.get('branch', '')
+        current_dir = config.get('contentDirectory', '')
+        content_type = config.get('contentType', 'book')
 
-            current_branch = config.get('branch', '')
-            current_dir = config.get('contentDirectory', '')
-            content_type = config.get('contentType', 'book')
+        new_branch = args.branch or current_branch
+        new_dir = args.directory or current_dir
 
-            new_branch = args.branch or current_branch
-            new_dir = args.directory or current_dir
+        needs_config = (new_branch != current_branch or new_dir != current_dir)
+        needs_enable = (args.enable and state == 'DISABLED')
 
-            needs_config = (new_branch != current_branch or new_dir != current_dir)
-            needs_enable = (args.enable and state == 'DISABLED')
+        if needs_config or needs_enable:
+            updates.append({
+                'name': t['name'],
+                'uuid': t['uuid'],
+                'current_branch': current_branch,
+                'current_dir': current_dir,
+                'new_branch': new_branch,
+                'new_dir': new_dir,
+                'content_type': content_type,
+                'job_name': job_name,
+                'needs_config': needs_config,
+                'needs_enable': needs_enable,
+                'state': state,
+            })
 
-            if needs_config or needs_enable:
-                updates.append({
-                    'name': t['name'],
-                    'uuid': t['uuid'],
-                    'current_branch': current_branch,
-                    'current_dir': current_dir,
-                    'new_branch': new_branch,
-                    'new_dir': new_dir,
-                    'content_type': content_type,
-                    'job_name': job_name,
-                    'needs_config': needs_config,
-                    'needs_enable': needs_enable,
-                    'state': state,
-                })
+    if not updates:
+        print("All titles are already up to date.")
+        return
 
-        if not updates:
-            print("All titles are already up to date.")
-            return
+    # Show plan
+    print(f"{'=' * 60}")
+    print(f"{'[DRY RUN] ' if not args.exec else ''}Updates for {len(updates)} titles:")
+    print(f"{'=' * 60}")
 
-        # Show plan
-        print(f"{'=' * 60}")
-        print(f"{'[DRY RUN] ' if not args.exec else ''}Updates for {len(updates)} titles:")
-        print(f"{'=' * 60}")
+    for t in updates:
+        print(f"\n  {t['name']}")
+        if t['needs_config']:
+            if t['current_branch'] != t['new_branch']:
+                print(f"    branch: {t['current_branch']} -> {t['new_branch']}")
+            if t['current_dir'] != t['new_dir']:
+                print(f"    dir:    {t['current_dir']} -> {t['new_dir']}")
+        if t['needs_enable']:
+            print(f"    enable: DISABLED -> ENABLED")
 
-        for t in updates:
-            print(f"\n  {t['name']}")
+    if not args.exec:
+        print(f"\nDry run. Use --exec to apply changes.")
+        return
+
+    # Execute
+    success = 0
+    fail = 0
+    for i, t in enumerate(updates):
+        print(f"\n[{i+1}/{len(updates)}] {t['name']}")
+
+        try:
             if t['needs_config']:
-                if t['current_branch'] != t['new_branch']:
-                    print(f"    branch: {t['current_branch']} -> {t['new_branch']}")
-                if t['current_dir'] != t['new_dir']:
-                    print(f"    dir:    {t['current_dir']} -> {t['new_dir']}")
+                update_build_config(
+                    session, t['uuid'], args.env,
+                    t['new_branch'], t['new_dir'], t['content_type']
+                )
+                print("  Config updated")
+
             if t['needs_enable']:
-                print(f"    enable: DISABLED -> ENABLED")
+                result = toggle_job(session, t['job_name'], True)
+                if result.get('ok'):
+                    print("  Enabled")
+                else:
+                    print(f"  Enable failed: {result.get('error')}")
 
-        if not args.exec:
-            print(f"\nDry run. Use --exec to apply changes.")
-            return
+            if args.rebuild and t['job_name']:
+                result = start_build(session, t['job_name'])
+                if result.get('ok'):
+                    print("  Rebuild triggered")
+                else:
+                    print(f"  Rebuild failed: {result.get('error')}")
 
-        # Execute
-        success = 0
-        fail = 0
-        for i, t in enumerate(updates):
-            print(f"\n[{i+1}/{len(updates)}] {t['name']}")
+            success += 1
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            fail += 1
 
-            try:
-                if t['needs_config']:
-                    update_build_config(
-                        page, t['uuid'], args.env,
-                        t['new_branch'], t['new_dir'], t['content_type']
-                    )
-                    print("  Config updated")
+        time.sleep(1)
 
-                if t['needs_enable']:
-                    result = toggle_job(page, t['job_name'], True)
-                    if result.get('ok'):
-                        print("  Enabled")
-                    else:
-                        print(f"  Enable failed: {result.get('error')}")
-
-                if args.rebuild and t['job_name']:
-                    result = start_build(page, t['job_name'])
-                    if result.get('ok'):
-                        print("  Rebuild triggered")
-                    else:
-                        print(f"  Rebuild failed: {result.get('error')}")
-
-                success += 1
-            except Exception as e:
-                print(f"  ERROR: {e}")
-                fail += 1
-
-            time.sleep(1)
-
-        print(f"\n{'=' * 60}")
-        print(f"Done. Success: {success}, Failed: {fail}")
-    finally:
-        browser.close()
-        p.stop()
+    print(f"\n{'=' * 60}")
+    print(f"Done. Success: {success}, Failed: {fail}")
 
 
 # ---------------------------------------------------------------------------
@@ -607,97 +567,92 @@ def cmd_update(args):
 
 def cmd_rebuild(args):
     """Trigger rebuilds for titles."""
-    p, browser, page = open_pantheon(args)
+    session = get_reef_session(args)
+    titles = get_titles(session, args.product, args.version)
+    titles = filter_titles(titles, args.title)
+    print(f"Found {len(titles)} matching titles\n")
 
-    try:
-        titles = get_titles(page, args.product, args.version)
-        titles = filter_titles(titles, args.title)
-        print(f"Found {len(titles)} matching titles\n")
+    # Collect jobs
+    jobs = []
+    for t in titles:
+        job = t.get('jobs', {}).get(args.env, {})
+        job_name = job.get('jobName', '')
+        state = job.get('state', '')
+        if not job_name:
+            continue
+        needs_enable = (args.enable and state == 'DISABLED')
+        jobs.append({
+            'name': t['name'],
+            'job_name': job_name,
+            'state': state,
+            'needs_enable': needs_enable,
+        })
 
-        # Collect jobs
-        jobs = []
-        for t in titles:
-            job = t.get('jobs', {}).get(args.env, {})
-            job_name = job.get('jobName', '')
-            state = job.get('state', '')
-            if not job_name:
-                continue
-            needs_enable = (args.enable and state == 'DISABLED')
-            jobs.append({
-                'name': t['name'],
-                'job_name': job_name,
-                'state': state,
-                'needs_enable': needs_enable,
-            })
+    disabled = [j for j in jobs if j['needs_enable']]
+    print(f"Jobs to rebuild: {len(jobs)}")
+    if disabled:
+        print(f"Jobs to enable:  {len(disabled)}")
 
-        disabled = [j for j in jobs if j['needs_enable']]
-        print(f"Jobs to rebuild: {len(jobs)}")
-        if disabled:
-            print(f"Jobs to enable:  {len(disabled)}")
-
-        if not args.exec:
-            print(f"\nDry run. Titles that would be rebuilt:")
-            for j in jobs:
-                enable_tag = " [ENABLE]" if j['needs_enable'] else ""
-                print(f"  {j['name']} ({j['state']}){enable_tag}")
-            print(f"\nUse --exec to apply.")
-            return
-
-        # Enable disabled jobs
-        if disabled:
-            print(f"\nEnabling {len(disabled)} disabled jobs...")
-            for j in disabled:
-                result = toggle_job(page, j['job_name'], True)
-                status = "OK" if result.get('ok') else f"FAIL: {result.get('error')}"
-                print(f"  {j['name']}: {status}")
-                time.sleep(1)
-
-        # Trigger rebuilds
-        print(f"\nTriggering {len(jobs)} rebuilds...")
-        success = 0
-        fail = 0
+    if not args.exec:
+        print("Dry run. Titles that would be rebuilt:")
         for j in jobs:
-            result = start_build(page, j['job_name'])
-            if result.get('ok'):
-                print(f"  {j['name']}: triggered")
-                success += 1
-            else:
-                print(f"  {j['name']}: FAIL: {result.get('error')}")
-                fail += 1
+            enable_tag = " [ENABLE]" if j['needs_enable'] else ""
+            print(f"  {j['name']} ({j['state']}){enable_tag}")
+        print("Use --exec to apply.")
+        return
+
+    # Enable disabled jobs
+    if disabled:
+        print(f"\nEnabling {len(disabled)} disabled jobs...")
+        for j in disabled:
+            result = toggle_job(session, j['job_name'], True)
+            status = "OK" if result.get('ok') else f"FAIL: {result.get('error')}"
+            print(f"  {j['name']}: {status}")
             time.sleep(1)
 
-        # Wait for completion if requested
-        if args.wait and success > 0:
-            print(f"\nWaiting for builds to complete (timeout: {args.timeout}s)...")
-            deadline = time.time() + args.timeout
-            pending = {j['name'] for j in jobs if j['job_name']}
+    # Trigger rebuilds
+    print(f"\nTriggering {len(jobs)} rebuilds...")
+    success = 0
+    fail = 0
+    for j in jobs:
+        result = start_build(session, j['job_name'])
+        if result.get('ok'):
+            print(f"  {j['name']}: triggered")
+            success += 1
+        else:
+            print(f"  {j['name']}: FAIL: {result.get('error')}")
+            fail += 1
+        time.sleep(1)
 
-            while pending and time.time() < deadline:
-                time.sleep(10)
-                fresh_titles = get_titles(page, args.product, args.version)
-                for t in fresh_titles:
-                    if t['name'] in pending:
-                        job = t.get('jobs', {}).get(args.env, {})
-                        state = job.get('state', '')
-                        if state in ('SUCCESS', 'FAILURE', 'DISABLED'):
-                            status = "OK" if state == 'SUCCESS' else state
-                            print(f"  {t['name']}: {status}")
-                            pending.discard(t['name'])
+    # Wait for completion if requested
+    if args.wait and success > 0:
+        print(f"\nWaiting for builds to complete (timeout: {args.timeout}s)...")
+        deadline = time.time() + args.timeout
+        pending = {j['name'] for j in jobs if j['job_name']}
 
-                remaining = len(pending)
-                if remaining > 0:
-                    elapsed = int(time.time() - (deadline - args.timeout))
-                    print(f"  ... {remaining} still building ({elapsed}s)")
+        while pending and time.time() < deadline:
+            time.sleep(10)
+            fresh_titles = get_titles(session, args.product, args.version)
+            for t in fresh_titles:
+                if t['name'] in pending:
+                    job = t.get('jobs', {}).get(args.env, {})
+                    state = job.get('state', '')
+                    if state in ('SUCCESS', 'FAILURE', 'DISABLED'):
+                        status = "OK" if state == 'SUCCESS' else state
+                        print(f"  {t['name']}: {status}")
+                        pending.discard(t['name'])
 
-            if pending:
-                print(f"\nTIMEOUT: {len(pending)} builds did not complete:")
-                for name in sorted(pending):
-                    print(f"  {name}")
+            remaining = len(pending)
+            if remaining > 0:
+                elapsed = int(time.time() - (deadline - args.timeout))
+                print(f"  ... {remaining} still building ({elapsed}s)")
 
-        print(f"\nDone. Triggered: {success}, Failed: {fail}")
-    finally:
-        browser.close()
-        p.stop()
+        if pending:
+            print(f"\nTIMEOUT: {len(pending)} builds did not complete:")
+            for name in sorted(pending):
+                print(f"  {name}")
+
+    print(f"\nDone. Triggered: {success}, Failed: {fail}")
 
 
 # ---------------------------------------------------------------------------
@@ -720,46 +675,42 @@ def cmd_publish(args):
         cmd_rebuild(args)
     else:
         # Just list what would be published
-        p, browser, page = open_pantheon(args)
-        try:
-            titles = get_titles(page, args.product, args.version)
-            titles = filter_titles(titles, args.title)
+        session = get_reef_session(args)
+        titles = get_titles(session, args.product, args.version)
+        titles = filter_titles(titles, args.title)
 
-            disabled = []
+        disabled = []
+        for t in titles:
+            job = t.get('jobs', {}).get('stage', {})
+            if job.get('state') == 'DISABLED':
+                disabled.append(t['name'])
+
+        print(f"Titles: {len(titles)}")
+        print(f"Disabled stage jobs: {len(disabled)}")
+
+        if not args.exec:
+            if disabled:
+                print("\nWould enable:")
+                for name in disabled:
+                    print(f"  {name}")
+            print("Use --exec to enable. Add --rebuild-first to also trigger builds.")
+            return
+
+        # Enable disabled stage jobs
+        if disabled:
+            print(f"\nEnabling {len(disabled)} stage jobs...")
             for t in titles:
                 job = t.get('jobs', {}).get('stage', {})
                 if job.get('state') == 'DISABLED':
-                    disabled.append(t['name'])
+                    job_name = job.get('jobName', '')
+                    if job_name:
+                        result = toggle_job(session, job_name, True)
+                        status = "OK" if result.get('ok') else "FAIL"
+                        print(f"  {t['name']}: {status}")
+                        time.sleep(1)
 
-            print(f"Titles: {len(titles)}")
-            print(f"Disabled stage jobs: {len(disabled)}")
-
-            if not args.exec:
-                if disabled:
-                    print(f"\nWould enable:")
-                    for name in disabled:
-                        print(f"  {name}")
-                print(f"\nUse --exec to enable. Add --rebuild-first to also trigger builds.")
-                return
-
-            # Enable disabled stage jobs
-            if disabled:
-                print(f"\nEnabling {len(disabled)} stage jobs...")
-                for t in titles:
-                    job = t.get('jobs', {}).get('stage', {})
-                    if job.get('state') == 'DISABLED':
-                        job_name = job.get('jobName', '')
-                        if job_name:
-                            result = toggle_job(page, job_name, True)
-                            status = "OK" if result.get('ok') else f"FAIL"
-                            print(f"  {t['name']}: {status}")
-                            time.sleep(1)
-
-            print("\nDone. Stage jobs enabled.")
-            print("Use --rebuild-first to also trigger builds.")
-        finally:
-            browser.close()
-            p.stop()
+        print("\nDone. Stage jobs enabled.")
+        print("Use --rebuild-first to also trigger builds.")
 
 
 # ---------------------------------------------------------------------------
