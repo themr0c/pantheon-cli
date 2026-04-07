@@ -1,0 +1,13 @@
+{
+  "name": "pantheon-cli",
+  "description": "Red Hat Pantheon documentation publishing automation",
+  "owner": { "name": "Fabrice Flore-Thébault" },
+  "plugins": [
+    {
+      "name": "pantheon-cli",
+      "source": ".",
+      "description": "List titles, update build configs, trigger rebuilds, publish releases, manage splash pages",
+      "version": "1.0.0"
+    }
+  ]
+}
