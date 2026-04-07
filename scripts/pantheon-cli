@@ -1245,14 +1245,15 @@ Prerequisites:
   - Playwright Firefox (installed via setup.sh)
 
 Examples:
-  pantheon-cli list --version 1.9
-  pantheon-cli update --version 1.9 --env preview --branch release-1.10
-  pantheon-cli update --version 1.9 --env preview --branch release-1.10 --exec
-  pantheon-cli rebuild --version 1.9 --env preview --exec --enable
-  pantheon-cli publish --version 1.9 --exec --rebuild-first
-  pantheon-cli splash-export --version 1.9 --env stage -o splash.yaml
-  pantheon-cli splash-configure --version 1.10 --env stage -c splash.yaml
-  pantheon-cli splash-configure --version 1.10 --env stage -c splash.yaml --exec
+  pantheon-cli versions
+  pantheon-cli list --version VERSION
+  pantheon-cli update --version VERSION --env preview --branch BRANCH
+  pantheon-cli update --version VERSION --env preview --branch BRANCH --exec
+  pantheon-cli rebuild --version VERSION --env preview --exec --enable
+  pantheon-cli publish --version VERSION --exec --rebuild-first
+  pantheon-cli splash-export --version VERSION --env stage -o splash.yaml
+  pantheon-cli splash-configure --version VERSION --env stage -c splash.yaml
+  pantheon-cli splash-configure --version VERSION --env stage -c splash.yaml --exec
 """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1260,7 +1261,7 @@ Examples:
     # versions
     p_versions = subparsers.add_parser(
         "versions",
-        help="List available products and versions"
+        help="Detect current GA version (fast, no auth needed)"
     )
     p_versions.add_argument(
         "--product", default="red_hat_developer_hub",
