@@ -10,13 +10,21 @@ Repository: <https://github.com/themr0c/pantheon-cli>
 - **Red Hat VPN** -- Required for access to `pantheon.cee.redhat.com` and `reef.corp.redhat.com`.
 - **Playwright Firefox** -- Installed automatically by `setup.sh`.
 
-## Setup
+## Install
+
+### As a Claude Code plugin (recommended)
+
+```bash
+claude plugins add --git-url https://github.com/themr0c/pantheon-cli.git
+```
+
+First use auto-bootstraps: Python venv, dependencies, Playwright Firefox, and SSO email config.
+
+### For development
 
 ```bash
 git clone git@github.com:themr0c/pantheon-cli.git
 cd pantheon-cli
-cp .env.example .env
-# Edit .env and set SSO_EMAIL to your Red Hat SSO email
 bash scripts/setup.sh
 ```
 
