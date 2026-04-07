@@ -8,7 +8,7 @@ Tools for automating Red Hat Pantheon documentation publishing operations.
 
 ## Prerequisites
 
-- Valid Kerberos ticket: `kinit your-id@REDHAT.COM` (verify with `klist`, lasts ~10 hours)
+- Valid Kerberos ticket in file cache: `KRB5CCNAME=FILE:~/.cache/krb5cc_pantheon kinit` (verify with `klist -c FILE:~/.cache/krb5cc_pantheon`, lasts ~10 hours). The default KCM cache uses a Unix socket inaccessible from the Claude Code sandbox.
 - Red Hat VPN connection
 - Playwright Firefox (installed by `bash scripts/setup.sh`)
 - `SSO_EMAIL` set in `.env`

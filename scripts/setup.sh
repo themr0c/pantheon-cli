@@ -55,4 +55,20 @@ source "$ENV_FILE"
 
 [[ -z "${SSO_EMAIL:-}" ]] && echo "WARNING: SSO_EMAIL not set in $ENV_FILE" >&2
 
+# Kerberos: ensure file-based cache exists for sandbox compatibility.
+# KCM (socket-based) caches are inaccessible from Claude Code sandbox.
+KRB5_FILE_CACHE="$HOME/.cache/krb5cc_pantheon"
+if ! klist -s -c "FILE:$KRB5_FILE_CACHE" 2>/dev/null; then
+  echo ""
+  echo "Kerberos ticket needed (file-based cache for Claude Code sandbox)."
+  echo "The default KCM cache uses a Unix socket that the sandbox can't reach."
+  read -rp "Run kinit now to create a file-based ticket? [Y/n] " answer
+  if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+    KRB5CCNAME="FILE:$KRB5_FILE_CACHE" kinit || true
+  else
+    echo "NOTE: Before using pantheon-cli, run:"
+    echo "  KRB5CCNAME=FILE:$KRB5_FILE_CACHE kinit"
+  fi
+fi
+
 echo "pantheon-cli: ready."

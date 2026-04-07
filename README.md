@@ -6,7 +6,7 @@ Repository: <https://github.com/themr0c/pantheon-cli>
 
 ## Prerequisites
 
-- **Kerberos ticket** -- Run `kinit` before using the CLI. Verify with `klist`.
+- **Kerberos ticket** -- Run `KRB5CCNAME=FILE:~/.cache/krb5cc_pantheon kinit` before using the CLI. Verify with `klist -c FILE:~/.cache/krb5cc_pantheon`. The file-based cache is required because the Claude Code sandbox cannot access the default KCM socket.
 - **Red Hat VPN** -- Required for access to `pantheon.cee.redhat.com` and `reef.corp.redhat.com`.
 - **Playwright Firefox** -- Installed automatically by `setup.sh`.
 

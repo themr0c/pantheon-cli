@@ -46,14 +46,23 @@ CACHE_DIR = Path.home() / ".cache"
 # ---------------------------------------------------------------------------
 
 def check_kerberos():
-    """Warn if no valid Kerberos ticket is found."""
+    """Ensure Kerberos ticket is accessible via file-based cache.
+
+    On systems using KCM (socket-based credential cache), sandboxed environments
+    like Claude Code plugins can't reach the Unix socket. This function uses a
+    file-based cache at ~/.cache/krb5cc_pantheon instead, populated by setup.sh.
+    """
+    file_cache = os.path.join(os.path.expanduser("~"), ".cache", "krb5cc_pantheon")
+
+    # Always prefer the file-based cache (works in sandboxed environments)
+    if os.path.exists(file_cache):
+        os.environ["KRB5CCNAME"] = f"FILE:{file_cache}"
+
     try:
-        result = subprocess.run(
-            ["klist", "-s"], capture_output=True, timeout=5
-        )
+        result = subprocess.run(["klist", "-s"], capture_output=True, timeout=5)
         if result.returncode != 0:
-            print("WARNING: No valid Kerberos ticket found. Run 'kinit' first.")
-            print("         SSO login may fail without a ticket.\n")
+            print("WARNING: No valid Kerberos ticket found.")
+            print("         Run: kinit -c FILE:~/.cache/krb5cc_pantheon YOUR_ID@REDHAT.COM\n")
     except FileNotFoundError:
         print("WARNING: 'klist' not found. Cannot verify Kerberos ticket.\n")
 
@@ -341,8 +350,8 @@ def _authenticate_and_extract_reef_cookies(args):
         try:
             browser.close()
             p.stop()
-            except Exception:
-                pass
+        except Exception:
+            pass
 
 
 def get_reef_session(args):
@@ -814,8 +823,8 @@ def _authenticate_and_extract_cookies(args):
         try:
             browser.close()
             p.stop()
-            except Exception:
-                pass
+        except Exception:
+            pass
 
 
 def get_splash_session(args):
