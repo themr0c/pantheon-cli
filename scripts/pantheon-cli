@@ -393,6 +393,8 @@ def get_reef_session(args):
 
 def cmd_versions(args):
     """Detect the current GA version from the public docs site (no auth needed)."""
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     url = f"https://docs.redhat.com/en/documentation/{args.product}"
     try:
         r = requests.get(url, timeout=10, verify=False)
@@ -1351,13 +1353,6 @@ Examples:
 
     args = parser.parse_args()
 
-    if not args.email:
-        sys.exit(
-            "Error: No email configured. Set SSO_EMAIL in .env or use --email."
-        )
-
-    check_kerberos()
-
     handlers = {
         'versions': cmd_versions,
         'list': cmd_list,
@@ -1367,6 +1362,14 @@ Examples:
         'splash-export': cmd_splash_export,
         'splash-configure': cmd_splash_configure,
     }
+
+    if args.command != 'versions':
+        if not args.email:
+            sys.exit(
+                "Error: No email configured. Set SSO_EMAIL in .env or use --email."
+            )
+        check_kerberos()
+
     handlers[args.command](args)
 
 
