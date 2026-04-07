@@ -314,6 +314,12 @@ def _authenticate_and_extract_reef_cookies(args):
     if args.fresh and os.path.exists(REEF_SESSION_DIR):
         shutil.rmtree(REEF_SESSION_DIR)
 
+    # Clear stale Firefox profile locks (prevents "Firefox is already running" errors)
+    for lock in ('lock', '.parentlock'):
+        lock_path = os.path.join(REEF_SESSION_DIR, lock)
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
+
     for headless in (True, False):
         p = sync_playwright().start()
         browser = p.firefox.launch_persistent_context(
@@ -788,6 +794,12 @@ def _authenticate_and_extract_cookies(args):
     session_dir = SPLASH_SESSION_DIR
     if args.fresh and os.path.exists(session_dir):
         shutil.rmtree(session_dir)
+
+    # Clear stale Firefox profile locks (prevents "Firefox is already running" errors)
+    for lock in ('lock', '.parentlock'):
+        lock_path = os.path.join(session_dir, lock)
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
 
     for headless in (True, False):
         p = sync_playwright().start()
