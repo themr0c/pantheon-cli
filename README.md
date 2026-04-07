@@ -21,6 +21,12 @@ claude plugins install pantheon-cli
 
 First use auto-bootstraps: Python venv, dependencies, Playwright Firefox, and SSO email config.
 
+To update the plugin:
+
+```bash
+claude plugins marketplace update pantheon-cli
+```
+
 ### For development
 
 ```bash
@@ -35,6 +41,7 @@ bash scripts/setup.sh
 
 | Command | Description |
 |---|---|
+| `pantheon-cli versions` | List available products and versions |
 | `pantheon-cli list --version 1.9` | List titles with job states, branches, content dirs |
 | `pantheon-cli update --version 1.9 --env preview --branch BRANCH [--directory DIR] [--enable] [--rebuild] [--exec]` | Update build config (dry-run by default) |
 | `pantheon-cli rebuild --version 1.9 --env preview [--enable] [--wait] [--exec]` | Trigger rebuilds |
