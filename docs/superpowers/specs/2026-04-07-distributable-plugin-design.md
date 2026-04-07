@@ -43,24 +43,31 @@ Register the `themr0c/pantheon-cli` GitHub repo as a git URL marketplace. The re
 
 ### 2. Auto-setup Hook
 
-**New file**: `.claude-plugin/hooks.json`
+**New file**: `hooks/hooks.json`
 
 ```json
 {
-  "hooks": [
-    {
-      "event": "before",
-      "matcher": "Bash(pantheon-cli*)",
-      "command": "bash \"$PLUGIN_DIR/scripts/setup.sh\"",
-      "description": "Bootstrap venv, dependencies, and Playwright Firefox on first use"
-    }
-  ]
+  "description": "Bootstrap pantheon-cli venv, dependencies, and Playwright Firefox on first use",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh\"",
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-- Fires before every `pantheon-cli` Bash call
+- Fires on session start (not before every tool call — simpler and sufficient)
 - `setup.sh` is idempotent — exits quickly (~100ms) after first bootstrap
-- `$PLUGIN_DIR` resolves to the cached plugin directory
+- `${CLAUDE_PLUGIN_ROOT}` resolves to the cached plugin directory
 
 ### 3. Adapt `scripts/setup.sh`
 
