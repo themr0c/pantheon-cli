@@ -7,6 +7,25 @@ description: This skill should be used when the user asks to "rebuild Pantheon t
 
 Trigger Jenkins builds for titles in Pantheon, optionally enabling disabled jobs first.
 
+## First Use / Defaults
+
+Before running the command, check for stored defaults:
+
+1. Read `~/.config/pantheon-cli/.env` for `PRODUCT` and `VERSION` values
+2. If `PRODUCT` is not set:
+   - Propose `red_hat_developer_hub` as the default
+   - Ask the user to confirm or enter a different product slug
+   - Offer to save it: append `PRODUCT=<value>` to `~/.config/pantheon-cli/.env`
+3. Discover available versions:
+   ```bash
+   pantheon-cli versions --product <PRODUCT>
+   ```
+4. If `VERSION` is not set:
+   - Present the discovered versions to the user
+   - Ask them to pick one
+   - Offer to save it: append `VERSION=<value>` to `~/.config/pantheon-cli/.env`
+5. If both defaults exist, show them and proceed. The user can override with `--product` or `--version` flags.
+
 ## Prerequisites Check
 
 Before running, verify:

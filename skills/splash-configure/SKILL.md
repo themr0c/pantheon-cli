@@ -7,6 +7,25 @@ description: This skill should be used when the user asks to "configure a splash
 
 Manage Pantheon splash page category structure and title ordering using YAML configuration files.
 
+## First Use / Defaults
+
+Before running the command, check for stored defaults:
+
+1. Read `~/.config/pantheon-cli/.env` for `PRODUCT` and `VERSION` values
+2. If `PRODUCT` is not set:
+   - Propose `red_hat_developer_hub` as the default
+   - Ask the user to confirm or enter a different product slug
+   - Offer to save it: append `PRODUCT=<value>` to `~/.config/pantheon-cli/.env`
+3. Discover available versions:
+   ```bash
+   pantheon-cli versions --product <PRODUCT>
+   ```
+4. If `VERSION` is not set:
+   - Present the discovered versions to the user
+   - Ask them to pick one
+   - Offer to save it: append `VERSION=<value>` to `~/.config/pantheon-cli/.env`
+5. If both defaults exist, show them and proceed. The user can override with `--product` or `--version` flags.
+
 ## Overview
 
 Splash pages in Pantheon organize documentation titles into categories (e.g., "Get started", "Install", "Configure"). The splash page is managed by the DXP DSPM service (Drupal 10), not the Reef API. These commands automate the manual process of organizing titles in the Pantheon splash page manager UI.

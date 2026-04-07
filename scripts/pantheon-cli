@@ -381,6 +381,24 @@ def get_reef_session(args):
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: versions
+# ---------------------------------------------------------------------------
+
+def cmd_versions(args):
+    """List available products and versions."""
+    session = get_reef_session(args)
+    data = reef_get(session, "lightblue/get_products")
+    products = data.get('data', {}).get('products', [])
+    if args.product:
+        products = [p for p in products if p.get('slug') == args.product]
+    for p in products:
+        print(f"\n{p.get('name', '?')} ({p.get('slug', '?')})")
+        for v in p.get('versions', []):
+            vname = v if isinstance(v, str) else v.get('name', v.get('version', str(v)))
+            print(f"  - {vname}")
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: list
 # ---------------------------------------------------------------------------
 
@@ -1225,6 +1243,24 @@ Examples:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # versions
+    p_versions = subparsers.add_parser(
+        "versions",
+        help="List available products and versions"
+    )
+    p_versions.add_argument(
+        "--product", default="red_hat_developer_hub",
+        help="Filter by product slug (default: red_hat_developer_hub)"
+    )
+    p_versions.add_argument(
+        "--fresh", action="store_true",
+        help="Clear browser session and re-authenticate"
+    )
+    p_versions.add_argument(
+        "--email", default=os.environ.get('SSO_EMAIL', ''),
+        help="SSO email (default: from SSO_EMAIL in .env)"
+    )
+
     # list
     subparsers.add_parser(
         "list", parents=[common],
@@ -1308,6 +1344,7 @@ Examples:
     check_kerberos()
 
     handlers = {
+        'versions': cmd_versions,
         'list': cmd_list,
         'update': cmd_update,
         'rebuild': cmd_rebuild,
