@@ -102,7 +102,8 @@ Replace manual setup instructions with:
 
 ```
 # Install
-claude plugins add --git-url https://github.com/themr0c/pantheon-cli.git
+claude plugins marketplace add https://github.com/themr0c/pantheon-cli.git
+claude plugins install pantheon-cli
 
 # First use auto-bootstraps: venv, deps, Playwright Firefox, SSO email config
 # Prerequisites: Python 3.x, Kerberos ticket (kinit), Red Hat VPN
@@ -126,7 +127,8 @@ claude plugins add --git-url https://github.com/themr0c/pantheon-cli.git
 
 ## Verification
 
-1. From a clean state (no clone), run `claude plugins add --git-url https://github.com/themr0c/pantheon-cli.git`
+1. From a clean state (no clone), run `claude plugins marketplace add https://github.com/themr0c/pantheon-cli.git
+claude plugins install pantheon-cli`
 2. Invoke `/pantheon-list --version 1.9` — should trigger setup.sh, prompt for email, bootstrap venv, then list titles
 3. Push a trivial change to `main`, restart Claude — verify plugin updates
 4. Run `pantheon-cli list --version 1.9` directly from terminal — should work via `~/bin/` symlink
