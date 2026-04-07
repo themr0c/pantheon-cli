@@ -11,8 +11,9 @@ from pathlib import Path
 
 # Re-exec under the pantheon-cli venv if not already running from it
 _script = Path(__file__).resolve()
-_venv_python = Path.home() / '.cache' / 'pantheon-cli' / 'venv' / 'bin' / 'python'
-if _venv_python.is_file() and Path(sys.executable).resolve() != _venv_python.resolve():
+_venv_dir = Path.home() / '.cache' / 'pantheon-cli' / 'venv'
+_venv_python = _venv_dir / 'bin' / 'python'
+if _venv_python.is_file() and sys.prefix != str(_venv_dir):
     os.execv(str(_venv_python), [str(_venv_python), str(_script)] + sys.argv[1:])
 
 import time
