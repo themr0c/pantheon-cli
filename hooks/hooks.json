@@ -1,0 +1,17 @@
+{
+  "description": "Bootstrap pantheon-cli venv, dependencies, and Playwright Firefox on first use",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh\"",
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
+}
