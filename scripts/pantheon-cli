@@ -392,17 +392,18 @@ def get_reef_session(args):
 # ---------------------------------------------------------------------------
 
 def cmd_versions(args):
-    """List available products and versions."""
-    session = get_reef_session(args)
-    data = reef_get(session, "lightblue/get_products")
-    products = data.get('data', {}).get('products', [])
-    if args.product:
-        products = [p for p in products if p.get('slug') == args.product]
-    for p in products:
-        print(f"\n{p.get('name', '?')} ({p.get('slug', '?')})")
-        for v in p.get('versions', []):
-            vname = v if isinstance(v, str) else v.get('name', v.get('version', str(v)))
-            print(f"  - {vname}")
+    """Detect the current GA version from the public docs site (no auth needed)."""
+    url = f"https://docs.redhat.com/en/documentation/{args.product}"
+    try:
+        r = requests.get(url, timeout=10, verify=False)
+        r.raise_for_status()
+        match = re.search(rf'{re.escape(args.product)}/([0-9][0-9.]*)', r.text)
+        if match:
+            print(f"latest-ga: {match.group(1)}")
+        else:
+            print("latest-ga: unknown")
+    except Exception as e:
+        print(f"latest-ga: error ({e})", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------

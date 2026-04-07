@@ -16,13 +16,14 @@ Before running the command, check for stored defaults:
    - Propose `red_hat_developer_hub` as the default
    - Ask the user to confirm or enter a different product slug
    - Offer to save it: append `PRODUCT=<value>` to `~/.config/pantheon-cli/.env`
-3. Discover available versions:
+3. Detect the latest GA version (fast, no auth needed):
    ```bash
    pantheon-cli versions --product <PRODUCT>
    ```
-4. If `VERSION` is not set:
-   - Present the discovered versions to the user
-   - Ask them to pick one
+   This outputs `latest-ga: <version>` (e.g., `latest-ga: 1.9`).
+4. If `VERSION` is not set, ask the user:
+   - Propose the detected GA version as the default
+   - Also accept any other version the user types
    - Offer to save it: append `VERSION=<value>` to `~/.config/pantheon-cli/.env`
 5. If both defaults exist, show them and proceed. The user can override with `--product` or `--version` flags.
 
