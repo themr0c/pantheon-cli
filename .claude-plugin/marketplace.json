@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "pantheon-cli",
-      "source": ".",
+      "source": "./",
       "description": "List titles, update build configs, trigger rebuilds, publish releases, manage splash pages",
       "version": "1.0.0"
     }
