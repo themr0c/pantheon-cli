@@ -15,7 +15,7 @@ Repository: <https://github.com/themr0c/pantheon-cli>
 ### As a Claude Code plugin (recommended)
 
 ```bash
-claude plugins marketplace add https://github.com/themr0c/pantheon-cli.git
+claude plugins marketplace add git@github.com:themr0c/pantheon-cli.git
 claude plugins install pantheon-cli
 ```
 
