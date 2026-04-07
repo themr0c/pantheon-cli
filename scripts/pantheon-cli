@@ -316,7 +316,10 @@ def _build_reef_session(cookies):
 
 
 def _authenticate_and_extract_reef_cookies(args):
-    """Launch headless Playwright Firefox, login via Kerberos SPNEGO, extract cookies."""
+    """Launch Playwright Firefox, login via Kerberos SPNEGO, extract cookies.
+
+    Tries headless first; falls back to headed for initial SSO/TrustArc consent.
+    """
     if args.fresh and os.path.exists(REEF_SESSION_DIR):
         shutil.rmtree(REEF_SESSION_DIR)
 
@@ -326,32 +329,47 @@ def _authenticate_and_extract_reef_cookies(args):
         if os.path.exists(lock_path):
             os.remove(lock_path)
 
-    p = sync_playwright().start()
-    browser = p.firefox.launch_persistent_context(
-        REEF_SESSION_DIR,
-        headless=True,
-        viewport={"width": 1400, "height": 900},
-        ignore_https_errors=True,
-        firefox_user_prefs={
-            "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
-        },
-    )
-    page = browser.pages[0] if browser.pages else browser.new_page()
+    for headless in (True, False):
+        p = sync_playwright().start()
+        browser = p.firefox.launch_persistent_context(
+            REEF_SESSION_DIR,
+            headless=headless,
+            viewport={"width": 1400, "height": 900},
+            ignore_https_errors=True,
+            firefox_user_prefs={
+                "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+            },
+        )
+        page = browser.pages[0] if browser.pages else browser.new_page()
 
-    try:
-        if login_and_wait(page, args.email):
-            cookies = _extract_cookies(browser)
-            _save_reef_cookies(cookies)
-            print(f"Reef session: captured {len(cookies)} cookies.")
-            return cookies
-
-        sys.exit("ERROR: Authentication failed. Check your Kerberos ticket (kinit) and VPN.")
-    finally:
         try:
-            browser.close()
-            p.stop()
-        except Exception:
-            pass
+            if login_and_wait(page, args.email):
+                cookies = _extract_cookies(browser)
+                _save_reef_cookies(cookies)
+                print(f"Reef session: captured {len(cookies)} cookies.")
+                return cookies
+
+            if headless:
+                print("Headless auth failed, retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            sys.exit("ERROR: Authentication failed. Check your Kerberos ticket (kinit) and VPN.")
+        except SystemExit:
+            raise
+        except Exception as e:
+            if headless:
+                print(f"Headless auth error ({e}), retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            raise
+        finally:
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
 
 
 def get_reef_session(args):
@@ -779,7 +797,10 @@ def _build_splash_session(cookies):
 
 
 def _authenticate_and_extract_cookies(args):
-    """Launch headless Playwright, authenticate via Kerberos SPNEGO, extract cookies."""
+    """Launch Playwright, authenticate via Kerberos SPNEGO, extract cookies.
+
+    Tries headless first; falls back to headed for initial SSO/TrustArc consent.
+    """
     session_dir = SPLASH_SESSION_DIR
     if args.fresh and os.path.exists(session_dir):
         shutil.rmtree(session_dir)
@@ -790,41 +811,56 @@ def _authenticate_and_extract_cookies(args):
         if os.path.exists(lock_path):
             os.remove(lock_path)
 
-    p = sync_playwright().start()
-    browser = p.firefox.launch_persistent_context(
-        session_dir,
-        headless=True,
-        viewport={"width": 1400, "height": 900},
-        ignore_https_errors=True,
-        firefox_user_prefs={
-            "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
-        },
-    )
-    page = browser.pages[0] if browser.pages else browser.new_page()
+    for headless in (True, False):
+        p = sync_playwright().start()
+        browser = p.firefox.launch_persistent_context(
+            session_dir,
+            headless=headless,
+            viewport={"width": 1400, "height": 900},
+            ignore_https_errors=True,
+            firefox_user_prefs={
+                "network.negotiate-auth.trusted-uris": ".redhat.com,.cee.redhat.com",
+            },
+        )
+        page = browser.pages[0] if browser.pages else browser.new_page()
 
-    try:
-        if login_and_wait(page, args.email):
-            # Navigate to the DSPM page to pick up cross-domain cookies
-            dspm_url = (
-                f"{DSPM_BASE}/product/{args.product}/{args.version}/{args.env}"
-                f"?iframe=true"
-            )
-            print("Navigating to DSPM to capture cookies...")
-            page.goto(dspm_url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(3)
-
-            cookies = _extract_cookies(browser)
-            _save_splash_cookies(cookies)
-            print(f"Captured {len(cookies)} cookies.")
-            return cookies
-
-        sys.exit("ERROR: Authentication failed. Check your Kerberos ticket (kinit) and VPN.")
-    finally:
         try:
-            browser.close()
-            p.stop()
-        except Exception:
-            pass
+            if login_and_wait(page, args.email):
+                # Navigate to the DSPM page to pick up cross-domain cookies
+                dspm_url = (
+                    f"{DSPM_BASE}/product/{args.product}/{args.version}/{args.env}"
+                    f"?iframe=true"
+                )
+                print("Navigating to DSPM to capture cookies...")
+                page.goto(dspm_url, wait_until="domcontentloaded", timeout=30000)
+                time.sleep(3)
+
+                cookies = _extract_cookies(browser)
+                _save_splash_cookies(cookies)
+                print(f"Captured {len(cookies)} cookies.")
+                return cookies
+
+            if headless:
+                print("Headless auth failed, retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            sys.exit("ERROR: Authentication failed. Check your Kerberos ticket (kinit) and VPN.")
+        except SystemExit:
+            raise
+        except Exception as e:
+            if headless:
+                print(f"Headless auth error ({e}), retrying with headed browser...")
+                browser.close()
+                p.stop()
+                continue
+            raise
+        finally:
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
 
 
 def get_splash_session(args):
