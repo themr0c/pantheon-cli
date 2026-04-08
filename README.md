@@ -16,7 +16,7 @@ Repository: <https://github.com/themr0c/pantheon-cli>
 
 ```bash
 claude plugins marketplace add git@github.com:themr0c/pantheon-cli.git
-claude plugins install pantheon-cli
+claude plugins install pantheon-cli@pantheon-cli
 ```
 
 First use auto-bootstraps: Python venv, dependencies, Playwright Firefox, and SSO email config.
