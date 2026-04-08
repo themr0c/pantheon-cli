@@ -24,7 +24,7 @@ First use auto-bootstraps: Python venv, dependencies, Playwright Firefox, and SS
 To update the plugin:
 
 ```bash
-claude plugins marketplace update pantheon-cli
+claude plugins update pantheon-cli@pantheon-cli
 ```
 
 ### For development
