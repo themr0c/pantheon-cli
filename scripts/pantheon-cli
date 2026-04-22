@@ -122,7 +122,7 @@ def _sso_login(page, email):
     return False
 
 
-def login_and_wait(page, email):
+def login_and_wait(page, email, timeout=120):
     """Navigate to Pantheon, automate SSO login, wait for auth."""
     print("Navigating to Pantheon...")
     page.goto(PANTHEON_URL, wait_until="domcontentloaded", timeout=60000)
@@ -155,8 +155,9 @@ def login_and_wait(page, email):
         _sso_login(page, email)
 
     # Wait for SSO redirect back to Pantheon
-    print("  Waiting for SSO to complete...")
-    for i in range(60):
+    print(f"  Waiting for SSO to complete (timeout {timeout}s)...")
+    iterations = timeout // 2
+    for i in range(iterations):
         time.sleep(2)
         if 'pantheon.cee.redhat.com' in page.url:
             if _check_authenticated(page):
@@ -164,6 +165,10 @@ def login_and_wait(page, email):
                 return True
         if (i + 1) % 10 == 0:
             print(f"  Still waiting... ({(i+1)*2}s)")
+
+    if timeout <= 20:
+        print(f"  SSO did not complete within {timeout}s.")
+        return False
 
     print("ERROR: Login timed out. Complete SSO manually in the browser window.")
     for i in range(60):
@@ -175,7 +180,7 @@ def login_and_wait(page, email):
         except Exception:
             pass
 
-    print("ERROR: Login timed out after 4 minutes.")
+    print("ERROR: Login timed out after manual wait.")
     return False
 
 
@@ -343,7 +348,8 @@ def _authenticate_and_extract_reef_cookies(args):
         page = browser.pages[0] if browser.pages else browser.new_page()
 
         try:
-            if login_and_wait(page, args.email):
+            sso_timeout = 20 if headless else 120
+            if login_and_wait(page, args.email, timeout=sso_timeout):
                 cookies = _extract_cookies(browser)
                 _save_reef_cookies(cookies)
                 print(f"Reef session: captured {len(cookies)} cookies.")
@@ -825,7 +831,8 @@ def _authenticate_and_extract_cookies(args):
         page = browser.pages[0] if browser.pages else browser.new_page()
 
         try:
-            if login_and_wait(page, args.email):
+            sso_timeout = 20 if headless else 120
+            if login_and_wait(page, args.email, timeout=sso_timeout):
                 # Navigate to the DSPM page to pick up cross-domain cookies
                 dspm_url = (
                     f"{DSPM_BASE}/product/{args.product}/{args.version}/{args.env}"
